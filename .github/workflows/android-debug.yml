@@ -42,6 +42,10 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # Override the action's obsolete default: "tools platform-tools".
+          # Command-line tools are installed by the action itself.
+          packages: 'platform-tools'
 
       - name: Install Android API 36
         run: |
