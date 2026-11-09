@@ -970,7 +970,7 @@ fun UniverseScreen(
             text = {
                 Column(Modifier.heightIn(max = 430.dp).verticalScroll(rememberScrollState())) {
                     OutlinedTextField(value = newTaskTitle, onValueChange = { newTaskTitle = it; criteriaValidation = null }, label = { Text("Task title") })
-                    OutlinedTextField(value = newTaskCriteria, onValueChange = { newTaskCriteria = null; criteriaValidation = null }, label = { Text("Verifiable proof criteria") }, minLines = 3)
+                    OutlinedTextField(value = newTaskCriteria, onValueChange = { newTaskCriteria = it; criteriaValidation = null }, label = { Text("Verifiable proof criteria") }, minLines = 3)
                     Text("Assignment mode", fontSize = 11.sp)
                     Row {
                         FilterChip(selected = newTaskMode == "everyone", onClick = { newTaskMode = "everyone" }, label = { Text("Everyone") })
