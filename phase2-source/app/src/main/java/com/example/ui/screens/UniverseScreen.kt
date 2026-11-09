@@ -609,6 +609,15 @@ fun UniverseScreen(
         aiQuoteAssignmentId = aid
         aiQuoteTaskId = task.optString("id")
         scope.launch {
+            if (mode == "personal") {
+                val metadata = TaskitatorWorkerApi.getAiKeysMetadataDetails(authToken).getOrNull()
+                val hasGemini = metadata?.optJSONObject("providers")
+                    ?.optJSONObject("gemini")?.optBoolean("saved", false) == true
+                if (!hasGemini) {
+                    error = "Universe personal AI reviews require a saved Gemini key. Add one through Taskitator website Settings or use hosted Pro review."
+                    return@launch
+                }
+            }
             val quote = call(base + "/ai/" + aid + "/quote", "POST", operationBody().put("mode", mode))
             if (quote != null) aiQuote = quote
         }
@@ -1433,7 +1442,7 @@ fun UniverseScreen(
                 Column {
                     Text("Mode: " + aiQuoteMode, color = TextSecondary, fontSize = 11.sp)
                     Text("Maximum credits: " + quoted.optString("max_credits", "0"), color = TextPrimary, fontWeight = FontWeight.Bold)
-                    Text("The review starts only after you accept the quote.", color = TextMuted, fontSize = 10.sp)
+                    Text(if (aiQuoteMode == "personal") "Uses your saved Gemini key. No Taskitator credits are charged." else "The maximum shown is reserved before the review; unused credits return at settlement.", color = TextMuted, fontSize = 10.sp)
                 }
             },
             confirmButton = { TextButton(onClick = { approveUniverseAiReview() }, enabled = !loading) { Text("Accept and review") } },
