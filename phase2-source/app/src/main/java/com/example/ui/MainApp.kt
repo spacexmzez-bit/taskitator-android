@@ -46,6 +46,7 @@ private fun screenLabel(screen: AppScreen, language: String): String {
         AppScreen.TRASH -> "المحذوفات"
         AppScreen.BREAKS -> "الاستراحات"
         AppScreen.SLEEP -> "قفل النوم"
+        AppScreen.UNIVERSE -> "المساحة المشتركة"
         AppScreen.SETTINGS -> "الإعدادات"
     }
 }
@@ -93,6 +94,10 @@ fun MainApp(
     val showStudyPlan by viewModel.showStudyPlanDialog.collectAsState()
     val showEvidenceAudit by viewModel.showEvidenceAuditDialog.collectAsState()
     val auditingTask by viewModel.auditingTask.collectAsState()
+    val auditingTasks by viewModel.auditingTasks.collectAsState()
+    val showCopilotDrawer by viewModel.showCopilotDrawer.collectAsState()
+    val copilotMessages by viewModel.copilotMessages.collectAsState()
+    val isCopilotLoading by viewModel.isCopilotLoading.collectAsState()
 
     val showBatchTags by viewModel.showBatchTagsModal.collectAsState()
     val showBatchPriority by viewModel.showBatchPriorityModal.collectAsState()
@@ -103,6 +108,9 @@ fun MainApp(
 
     val hasPendingAiLockedTasksToday by viewModel.hasPendingAiLockedTasksToday.collectAsState()
     val allTags = remember(tasks) { tasks.flatMap { it.tags }.distinct() }
+    val selectedAuditTasks = remember(tasks, selectedTaskIds) { tasks.filter { it.id in selectedTaskIds } }
+    val canBatchAudit = selectedTaskIds.isNotEmpty() && selectedTaskIds.size <= 20 &&
+        selectedAuditTasks.size == selectedTaskIds.size && selectedAuditTasks.all { it.aiLocked && it.status == TaskStatus.ACTIVE }
     val completedCount = remember(tasks) { tasks.count { it.status == TaskStatus.COMPLETED } }
 
     BackHandler(enabled = currentScreen != AppScreen.TODAY) {
@@ -216,6 +224,8 @@ fun MainApp(
                         onOpenTags = { viewModel.setBatchTagsModalVisible(true) },
                         onOpenPriority = { viewModel.setBatchPriorityModalVisible(true) },
                         onOpenReschedule = { viewModel.setBatchRescheduleModalVisible(true) },
+                        canBatchAudit = canBatchAudit,
+                        onBatchAudit = { viewModel.openBatchEvidenceAuditDialog(selectedTaskIds) },
                         onBatchComplete = {
                             selectedTaskIds.forEach { viewModel.repository.toggleTaskCompletion(it) }
                             viewModel.clearSelection()
@@ -250,6 +260,11 @@ fun MainApp(
                     AppScreen.TRASH -> TrashScreen(viewModel = viewModel)
                     AppScreen.BREAKS -> BreaksScreen(viewModel = viewModel)
                     AppScreen.SLEEP -> SleepLockScreen(viewModel = viewModel)
+                    AppScreen.UNIVERSE -> UniverseScreen(
+                        authToken = settings.authToken,
+                        isPro = settings.isPro,
+                        onStatus = { viewModel.setStatusMessage(it) }
+                    )
                     AppScreen.SETTINGS -> SettingsScreen(viewModel = viewModel)
                 }
             }
@@ -317,17 +332,27 @@ fun MainApp(
         )
     }
 
-    if (showEvidenceAudit && auditingTask != null) {
+    if (showEvidenceAudit && auditingTask != null && auditingTasks.isNotEmpty()) {
         EvidenceAuditDialog(
-            task = auditingTask!!,
+            tasks = auditingTasks,
             isPro = settings.isPro,
             useByok = settings.useByok,
             authToken = settings.authToken,
             onDismiss = { viewModel.closeEvidenceAuditDialog() },
-            onAuditApproved = { taskId, feedback ->
-                viewModel.repository.confirmAuditApproval(taskId, feedback)
+            onAuditApproved = { _, _ ->
+                viewModel.refreshAfterAudit()
                 viewModel.closeEvidenceAuditDialog()
             }
+        )
+    }
+
+    if (showCopilotDrawer) {
+        CopilotDrawer(
+            copilotName = "Ari",
+            messages = copilotMessages,
+            isLoading = isCopilotLoading,
+            onSendMessage = { viewModel.sendCopilotMessage(it) },
+            onDismiss = { viewModel.setCopilotDrawerVisible(false) }
         )
     }
 
