@@ -119,6 +119,13 @@ fun TodayScreen(
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                IconButton(
+                    onClick = { viewModel.setCopilotDrawerVisible(true) },
+                    modifier = Modifier.testTag("open_copilot_button")
+                ) {
+                    Text("AI", fontSize = 14.sp, color = CyanAccent, fontWeight = FontWeight.Bold)
+                }
+
                 // Multi-select toggle
                 IconButton(
                     onClick = { viewModel.toggleSelectMode() },
