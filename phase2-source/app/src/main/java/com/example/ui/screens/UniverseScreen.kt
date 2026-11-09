@@ -614,6 +614,20 @@ fun UniverseScreen(
         }
     }
 
+    fun cancelUniverseAiReview(reviewId: String) {
+        if (reviewId.isBlank()) return
+        scope.launch {
+            loading = true
+            val result = call(base + "/ai/" + reviewId + "/cancel", "POST", operationBody())
+            if (result != null) {
+                aiQuote = null
+                aiResultMessage = "AI review quote cancelled."
+                groupId?.let { refreshGroup(it) }
+            }
+            loading = false
+        }
+    }
+
     fun approveUniverseAiReview() {
         val quote = aiQuote ?: return
         val reviewId = quote.optString("id")
@@ -1268,6 +1282,11 @@ fun UniverseScreen(
             it.optString("verdict") == "approved" &&
                 it.optInt("task_revision", -1) == selectedTask?.optInt("revision", 1)
         } == true
+        val aiReviews = detail?.optJSONArray("ai_reviews")?.toObjectList().orEmpty()
+        val quotedAiReview = aiReviews.firstOrNull {
+            it.optString("state") == "quoted" && it.optLong("expires_at", 0L) > System.currentTimeMillis()
+        }
+        val canRequestAi = detail?.optBoolean("can_request_ai", false) == true
         val isAllowedReviewer = groupRole in listOf("owner", "admin") ||
             selectedTask?.optJSONArray("reviewers")?.containsString(currentUserId) == true
         val canReview = isAllowedReviewer && latest != null &&
@@ -1331,9 +1350,28 @@ fun UniverseScreen(
                         Text("Decision: " + (if (latest.isNull("decision")) "pending" else latest.optString("decision")), color = TextSecondary, fontSize = 11.sp)
                         Text(latest.optString("reason"), color = TextMuted, fontSize = 11.sp)
                     }
+                    if (aiReviews.isNotEmpty()) {
+                        Spacer(Modifier.height(8.dp))
+                        Text("AI review history", color = CyanAccent, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+                        aiReviews.forEach { aiReview ->
+                            Text(
+                                aiReview.optString("state") + " · " + aiReview.optString("mode") +
+                                    " · maximum " + aiReview.optString("max_credits", "0") + " credits",
+                                color = TextSecondary,
+                                fontSize = 10.sp
+                            )
+                            aiReview.optJSONObject("result")?.let { result ->
+                                Text(
+                                    result.optString("verdict") + ": " + result.optString("reason"),
+                                    color = TextMuted,
+                                    fontSize = 10.sp
+                                )
+                            }
+                        }
+                    }
                     if (canReview) {
                         Spacer(Modifier.height(8.dp))
-                        Text("A different reviewer must decide the submission.", color = TextMuted, fontSize = 10.sp)
+                        Text("A permitted reviewer must decide the submission.", color = TextMuted, fontSize = 10.sp)
                     }
                 }
             },
@@ -1346,10 +1384,19 @@ fun UniverseScreen(
                         selectedAssignment?.optString("state") == "pending" && !aiApproved &&
                         (latest.isNull("decision") || latest.optString("decision").isBlank())
                     ) {
-                        TextButton(onClick = {
-                            startUniverseAiReview(selectedAssignment!!, selectedTask!!)
-                            showAssignmentDetail = false
-                        }) { Text("AI review") }
+                        if (quotedAiReview != null) {
+                            TextButton(onClick = {
+                                aiQuote = quotedAiReview
+                                aiQuoteMode = quotedAiReview.optString("mode", "personal")
+                                aiQuoteAssignmentId = selectedAssignment!!.optString("id")
+                                aiQuoteTaskId = selectedTask!!.optString("id")
+                            }) { Text("Resume AI quote") }
+                        } else if (canRequestAi) {
+                            TextButton(onClick = {
+                                startUniverseAiReview(selectedAssignment!!, selectedTask!!)
+                                showAssignmentDetail = false
+                            }) { Text("Get AI review quote") }
+                        }
                     }
                     if (canReview) {
                         TextButton(onClick = {
@@ -1390,7 +1437,12 @@ fun UniverseScreen(
                 }
             },
             confirmButton = { TextButton(onClick = { approveUniverseAiReview() }, enabled = !loading) { Text("Accept and review") } },
-            dismissButton = { TextButton(onClick = { aiQuote = null }) { Text("Cancel") } }
+            dismissButton = {
+                TextButton(
+                    onClick = { cancelUniverseAiReview(quoted.optString("id")) },
+                    enabled = !loading
+                ) { Text("Cancel quote") }
+            }
         )
     }
 
