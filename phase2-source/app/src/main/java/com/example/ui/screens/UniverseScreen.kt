@@ -94,7 +94,7 @@ fun UniverseScreen(
     var newTaskTitle by remember { mutableStateOf("") }
     var newTaskCriteria by remember { mutableStateOf("") }
     var newTaskMode by remember { mutableStateOf("everyone") }
-    var newTaskAiRequired by remember { mutableStateOf(false) }
+    var newTaskAuditMode by remember { mutableStateOf("none") }
     var criteriaValidation by remember { mutableStateOf<JSONObject?>(null) }
     var dueAtMillis by remember { mutableStateOf<Long?>(null) }
     var selectedProjectId by remember { mutableStateOf("") }
@@ -103,6 +103,7 @@ fun UniverseScreen(
     var inviteToken by remember { mutableStateOf<String?>(null) }
     var showSubmit by remember { mutableStateOf(false) }
     var submissionText by remember { mutableStateOf("") }
+    var submissionReviewPath by remember { mutableStateOf("human") }
     var selectedAssignment by remember { mutableStateOf<JSONObject?>(null) }
     var selectedTask by remember { mutableStateOf<JSONObject?>(null) }
     var selectedAssignmentDetail by remember { mutableStateOf<JSONObject?>(null) }
@@ -399,7 +400,7 @@ fun UniverseScreen(
             error = "Choose a project and provide a title and verifiable criteria."
             return
         }
-        if (newTaskAiRequired && serverValidationRequired && criteriaValidation?.optBoolean("passed", false) != true) {
+        if (newTaskAuditMode in setOf("ai", "either", "both") && serverValidationRequired && criteriaValidation?.optBoolean("passed", false) != true) {
             error = "Validate the current title and criteria at 7/10 or higher before creating this AI-reviewed task."
             return
         }
@@ -413,9 +414,9 @@ fun UniverseScreen(
             put("mode", newTaskMode)
             put("members", JSONArray(memberIds))
             put("reviewers", JSONArray(members.filter { it.optString("role") == "reviewer" }.map { it.optString("account_id") }))
-            put("audit_mode", if (newTaskAiRequired) "both" else "human")
+            put("audit_mode", newTaskAuditMode)
             put("allow_late", false)
-            if (newTaskAiRequired && serverValidationRequired) {
+            if (newTaskAuditMode in setOf("ai", "either", "both") && serverValidationRequired) {
                 put("validation_id", criteriaValidation?.optString("id").orEmpty())
             }
             dueAtMillis?.let { put("due_at", it) }
@@ -425,7 +426,7 @@ fun UniverseScreen(
         newTaskTitle = ""
         newTaskCriteria = ""
         newTaskMode = "everyone"
-        newTaskAiRequired = false
+        newTaskAuditMode = "none"
         criteriaValidation = null
         dueAtMillis = null
     }
@@ -739,6 +740,7 @@ fun UniverseScreen(
                                                         selectedTask = task
                                                         submissionText = ""
                                                         submissionFiles = emptyList()
+                                                        submissionReviewPath = "human"
                                                         showSubmit = true
                                                     }) { Text("Submit") }
                                                 }
@@ -1014,20 +1016,32 @@ fun UniverseScreen(
                             fontSize = 11.sp
                         )
                     }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(checked = newTaskAiRequired, onCheckedChange = {
-                            newTaskAiRequired = it
-                            criteriaValidation = null
-                        })
-                        Text("Require AI evidence review", fontSize = 12.sp)
+                    Text("Audit mode", color = TextSecondary, fontSize = 11.sp)
+                    listOf(
+                        "none" to "No audit",
+                        "human" to "Human only",
+                        "ai" to "AI only",
+                        "either" to "AI or human — member chooses",
+                        "both" to "AI then human"
+                    ).forEach { (mode, label) ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(
+                                selected = newTaskAuditMode == mode,
+                                onClick = {
+                                    newTaskAuditMode = mode
+                                    criteriaValidation = null
+                                }
+                            )
+                            Text(label, color = TextPrimary, fontSize = 12.sp)
+                        }
                     }
-                    if (newTaskAiRequired && serverValidationRequired) {
+                    if (newTaskAuditMode in setOf("ai", "either", "both") && serverValidationRequired) {
                         OutlinedButton(
                             onClick = { validateUniverseCriteria() },
                             enabled = !loading && newTaskTitle.isNotBlank() && newTaskCriteria.isNotBlank(),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text(if (loading) "Validating…" else "Validate criteria")
+                            Text(if (loading) "Validating…" else "Validate AI criteria")
                         }
                         criteriaValidation?.let { validation ->
                             Text(
@@ -1079,6 +1093,22 @@ fun UniverseScreen(
             text = {
                 Column {
                     Text(selectedTask?.optString("title").orEmpty(), color = TextSecondary, fontSize = 11.sp)
+                    if (selectedTask?.optString("audit_mode") == "either") {
+                        Text("Choose the review path for this submission", color = TextSecondary, fontSize = 11.sp)
+                        Row {
+                            FilterChip(
+                                selected = submissionReviewPath == "ai",
+                                onClick = { submissionReviewPath = "ai" },
+                                label = { Text("AI review") }
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            FilterChip(
+                                selected = submissionReviewPath == "human",
+                                onClick = { submissionReviewPath = "human" },
+                                label = { Text("Human review") }
+                            )
+                        }
+                    }
                     OutlinedTextField(value = submissionText, onValueChange = { submissionText = it }, label = { Text("Evidence notes") }, minLines = 2)
                     OutlinedButton(
                         onClick = { proofPicker.launch(arrayOf("image/jpeg", "image/png", "application/pdf", "text/plain")) },
@@ -1102,7 +1132,16 @@ fun UniverseScreen(
         val submissionList = detail?.optJSONArray("submissions")?.toObjectList().orEmpty()
         val latest = submissionList.firstOrNull()
         val isSubmitter = latest?.optString("actor_id") == currentUserId
-        val canReview = groupRole in listOf("owner", "admin", "reviewer") && latest != null && !isSubmitter
+        val auditMode = selectedTask?.optString("audit_mode", "none") ?: "none"
+        val reviewPath = latest?.optString("review_path").orEmpty()
+        val humanReviewRequired = auditMode == "human" || auditMode == "both" || (auditMode == "either" && reviewPath == "human")
+        val aiReviewRequired = auditMode == "ai" || auditMode == "both" || (auditMode == "either" && reviewPath == "ai")
+        val aiAttestation = detail?.optJSONObject("ai_attestation")
+        val aiApproved = aiAttestation?.optString("verdict") == "approved" &&
+            aiAttestation.optInt("task_revision", -1) == selectedTask?.optInt("revision", 1)
+        val canReview = groupRole in listOf("owner", "admin", "reviewer") &&
+            latest != null && !isSubmitter && selectedAssignment?.optString("state") == "pending" &&
+            humanReviewRequired && (auditMode != "both" || aiApproved)
         AlertDialog(
             onDismissRequest = { showAssignmentDetail = false },
             title = { Text(selectedTask?.optString("title").orEmpty() + " · " + selectedAssignment?.optString("state").orEmpty()) },
@@ -1149,7 +1188,10 @@ fun UniverseScreen(
             },
             confirmButton = {
                 Row {
-                    if (selectedTask?.optBoolean("ai_required") == true && isSubmitter && latest != null && selectedAssignment?.optString("state") == "pending" && (latest.isNull("decision") || latest.optString("decision").isBlank())) {
+                    if (aiReviewRequired && isSubmitter && latest != null &&
+                        selectedAssignment?.optString("state") == "pending" &&
+                        (latest.isNull("decision") || latest.optString("decision").isBlank())
+                    ) {
                         TextButton(onClick = {
                             startUniverseAiReview(selectedAssignment!!, selectedTask!!)
                             showAssignmentDetail = false
