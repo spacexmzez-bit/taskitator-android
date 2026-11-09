@@ -1,0 +1,43 @@
+name: Taskitator Android Phase 2 build
+
+on:
+  push:
+    branches: [phase2]
+    paths:
+      - 'phase2-source/**'
+      - '.github/workflows/phase2-build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - name: Validate source archive layout
+        run: |
+          test -f phase2-source/gradlew
+          test -f phase2-source/settings.gradle.kts
+          test -f phase2-source/app/build.gradle.kts
+          chmod +x phase2-source/gradlew
+      - name: Run unit tests and assemble debug APK
+        working-directory: phase2-source
+        run: ./gradlew --no-daemon testDebugUnitTest assembleDebug
+      - name: Package Phase 2 source and APK
+        run: |
+          mkdir -p dist
+          cp phase2-source/app/build/outputs/apk/debug/app-debug.apk dist/taskitator-phase2-debug.apk
+          cd phase2-source
+          zip -qr ../dist/taskitator-phase2-source.zip . -x '*/build/*' '*/.gradle/*'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: taskitator-phase2-build
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
