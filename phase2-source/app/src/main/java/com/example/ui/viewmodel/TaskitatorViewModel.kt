@@ -351,8 +351,8 @@ class TaskitatorViewModel(application: Application) : AndroidViewModel(applicati
 
     fun refreshAfterAudit() {
         viewModelScope.launch {
-            val (ok, message) = repository.performSync()
-            setStatusMessage(if (ok) "Server-approved task state synchronized." else "The Worker confirmed the review, but the refresh failed: " + message)
+            val (ok, message) = repository.syncAfterServerMutation()
+            setStatusMessage(if (ok) "Server-approved task state synchronized." else "The Worker confirmed the review, but the refresh needs attention: " + message)
         }
     }
 
