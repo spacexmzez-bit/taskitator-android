@@ -40,6 +40,7 @@ import java.util.Date
 import java.util.Locale
 
 private data class UniverseUploadFile(val name: String, val mime: String, val bytes: ByteArray, val hash: String)
+private data class UniversePendingDownload(val name: String, val mime: String, val bytes: ByteArray)
 
 private fun JSONArray.toObjectList(): List<JSONObject> =
     (0 until length()).mapNotNull { optJSONObject(it) }
@@ -108,6 +109,8 @@ fun UniverseScreen(
     var aiQuoteTaskId by remember { mutableStateOf("") }
     var aiResultMessage by remember { mutableStateOf<String?>(null) }
     var proUseByok by remember { mutableStateOf(false) }
+    var pendingDownload by remember { mutableStateOf<UniversePendingDownload?>(null) }
+    var downloadBusy by remember { mutableStateOf(false) }
 
     suspend fun call(path: String, method: String = "GET", body: JSONObject? = null): JSONObject? {
         val result = TaskitatorWorkerApi.requestJson(path, method, authToken, body, 90000)
@@ -185,6 +188,32 @@ fun UniverseScreen(
     val isManager = groupRole == "owner" || groupRole == "admin"
     val base = if (groupId.isNullOrBlank()) "" else "/universe/groups/" + groupId
 
+    val saveFileLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream")
+    ) { uri ->
+        val file = pendingDownload
+        if (uri != null && file != null) {
+            scope.launch {
+                try {
+                    withContext(Dispatchers.IO) {
+                        val output = context.contentResolver.openOutputStream(uri)
+                            ?: throw IllegalStateException("Unable to open the selected destination.")
+                        output.use { it.write(file.bytes) }
+                    }
+                    onStatus("Saved " + file.name)
+                } catch (e: Exception) {
+                    error = e.message ?: "Unable to save the downloaded attachment."
+                } finally {
+                    pendingDownload = null
+                    downloadBusy = false
+                }
+            }
+        } else {
+            pendingDownload = null
+            downloadBusy = false
+        }
+    }
+
     val proofPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) {
             scope.launch {
@@ -200,6 +229,41 @@ fun UniverseScreen(
                 } finally {
                     loading = false
                 }
+            }
+        }
+    }
+
+    fun downloadAttachment(fileId: String) {
+        if (fileId.isBlank() || downloadBusy) return
+        scope.launch {
+            downloadBusy = true
+            error = null
+            val result = call(base + "/work/files/" + fileId)
+            if (result != null) {
+                try {
+                    val encoded = result.optString("data")
+                    if (encoded.isBlank()) throw IllegalStateException("The Worker returned no attachment bytes.")
+                    val bytes = Base64.decode(encoded, Base64.DEFAULT)
+                    if (bytes.isEmpty() || bytes.size > 5 * 1024 * 1024) {
+                        throw IllegalStateException("The downloaded attachment is empty or exceeds the 5 MiB limit.")
+                    }
+                    val rawName = result.optString("name", "universe-attachment")
+                    val safeName = rawName.substringAfterLast('/').substringAfterLast('\\')
+                        .replace(Regex("[\\u0000-\\u001F]"), "_").take(120)
+                        .ifBlank { "universe-attachment" }
+                    pendingDownload = UniversePendingDownload(
+                        safeName,
+                        result.optString("mime", "application/octet-stream"),
+                        bytes
+                    )
+                    saveFileLauncher.launch(safeName)
+                } catch (e: Exception) {
+                    error = e.message ?: "Unable to prepare the attachment."
+                    downloadBusy = false
+                    pendingDownload = null
+                }
+            } else {
+                downloadBusy = false
             }
         }
     }
@@ -958,7 +1022,28 @@ fun UniverseScreen(
                         Text(latest.optString("text", ""), color = TextPrimary, fontSize = 12.sp)
                         val fileIds = latest.optJSONArray("files") ?: JSONArray()
                         if (fileIds.length() > 0) {
-                            Text("Attachments: " + (0 until fileIds.length()).joinToString { fileIds.optString(it) }, color = TextMuted, fontSize = 10.sp)
+                            Text("Proof attachments", color = CyanAccent, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+                            (0 until fileIds.length()).forEach { index ->
+                                TextButton(
+                                    onClick = { downloadAttachment(fileIds.optString(index)) },
+                                    enabled = !downloadBusy && !loading
+                                ) {
+                                    Text(if (downloadBusy) "Preparing download…" else "Save proof file " + (index + 1))
+                                }
+                            }
+                        }
+                        val referenceFiles = detail?.optJSONArray("references")?.toObjectList().orEmpty()
+                        if (referenceFiles.isNotEmpty()) {
+                            Spacer(Modifier.height(6.dp))
+                            Text("Reference files", color = CyanAccent, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+                            referenceFiles.forEach { reference ->
+                                TextButton(
+                                    onClick = { downloadAttachment(reference.optString("id")) },
+                                    enabled = !downloadBusy && !loading
+                                ) {
+                                    Text("Save " + reference.optString("name", "reference file"))
+                                }
+                            }
                         }
                         Text("Decision: " + latest.optString("decision", "pending"), color = TextSecondary, fontSize = 11.sp)
                         Text(latest.optString("reason"), color = TextMuted, fontSize = 11.sp)
