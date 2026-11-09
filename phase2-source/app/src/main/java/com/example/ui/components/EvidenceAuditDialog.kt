@@ -47,7 +47,9 @@ fun EvidenceAuditDialog(
     val scope = rememberCoroutineScope()
     val selectedTasks = remember(tasks) { tasks.take(20) }
     val batch = selectedTasks.size > 1
-    val hosted = isPro && !useByok
+    var hosted by remember { mutableStateOf(isPro && !useByok) }
+    var serverIsPro by remember { mutableStateOf(isPro) }
+    var aiModeReady by remember { mutableStateOf(false) }
 
     var selectedFiles by remember { mutableStateOf<List<ProofAttachmentInput>>(emptyList()) }
     var isBusy by remember { mutableStateOf(false) }
@@ -58,6 +60,28 @@ fun EvidenceAuditDialog(
     var jobId by remember { mutableStateOf("") }
     var eligibleTaskIds by remember { mutableStateOf<List<String>>(emptyList()) }
     var reviewFeedback by remember { mutableStateOf("") }
+
+    LaunchedEffect(authToken) {
+        aiModeReady = false
+        if (authToken.isBlank()) {
+            errorMessage = "Sign in before starting an evidence audit."
+        } else {
+            val statusResult = TaskitatorWorkerApi.getProStatusDetails(authToken)
+            val metadataResult = TaskitatorWorkerApi.getAiKeysMetadataDetails(authToken)
+            if (statusResult.isFailure || metadataResult.isFailure) {
+                errorMessage = statusResult.exceptionOrNull()?.message
+                    ?: metadataResult.exceptionOrNull()?.message
+                    ?: "Unable to verify your AI account settings."
+            } else {
+                val status = statusResult.getOrThrow()
+                val metadata = metadataResult.getOrThrow()
+                serverIsPro = status.optBoolean("isPro", false)
+                hosted = metadata.optBoolean("hosted", false)
+                aiModeReady = true
+                errorMessage = null
+            }
+        }
+    }
 
     val filePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
@@ -154,7 +178,7 @@ fun EvidenceAuditDialog(
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            if (hosted) "Hosted Pro review · quote required before charge" else "Personal provider review",
+                            if (!aiModeReady) "Verifying AI account settings…" else if (hosted) "Hosted Pro review · quote required before charge" else "Personal provider review",
                             color = TextSecondary,
                             fontSize = 11.sp
                         )
@@ -164,6 +188,9 @@ fun EvidenceAuditDialog(
                     }
                 }
 
+                if (batch && aiModeReady && !serverIsPro) {
+                    Text("Batch evidence review requires an active Pro subscription. Review tasks individually on the Free plan.", color = WarningAmber, fontSize = 11.sp)
+                }
                 Spacer(Modifier.height(12.dp))
                 Card(
                     colors = CardDefaults.cardColors(containerColor = DarkSurfaceVariant),
@@ -270,7 +297,7 @@ fun EvidenceAuditDialog(
                                 }
                             }
                         },
-                        enabled = !isBusy && selectedFiles.isNotEmpty() && selectedTasks.isNotEmpty() && selectedTasks.size <= 20,
+                        enabled = !isBusy && aiModeReady && (!batch || serverIsPro) && selectedFiles.isNotEmpty() && selectedTasks.isNotEmpty() && selectedTasks.size <= 20,
                         colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue),
                         modifier = Modifier.fillMaxWidth().testTag("submit_evidence_audit_button")
                     ) {
