@@ -77,8 +77,12 @@ fun EvidenceAuditDialog(
                 val metadata = metadataResult.getOrThrow()
                 serverIsPro = status.optBoolean("isPro", false)
                 hosted = metadata.optBoolean("hosted", false)
-                aiModeReady = true
-                errorMessage = null
+                val provider = metadata.optString("selected_provider", "gemini")
+                val providerReady = metadata.optJSONObject("providers")
+                    ?.optJSONObject(provider)?.optBoolean("saved", false) == true
+                aiModeReady = hosted || providerReady
+                errorMessage = if (aiModeReady) null else
+                    "No saved key is available for the selected AI provider. Add one through Taskitator website Settings."
             }
         }
     }
