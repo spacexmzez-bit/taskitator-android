@@ -227,6 +227,58 @@ fun UniverseScreen(
         }
     }
 
+    val referencePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val task = referenceUploadTask
+        if (uri != null && task != null) {
+            scope.launch {
+                loading = true
+                error = null
+                try {
+                    val file = readUniverseFile(context, uri)
+                    val taskRevision = task.optInt("revision", 1)
+                    val meta = JSONObject().apply {
+                        put("operation_id", TaskitatorWorkerApi.newOperationId())
+                        put("task_id", task.optString("id"))
+                        put("kind", "reference")
+                        put("name", file.name)
+                        put("mime", file.mime)
+                        put("size", file.bytes.size)
+                        put("hash", file.hash)
+                        put("task_revision", taskRevision)
+                    }
+                    val staged = call(base + "/work/files", "POST", meta)
+                    if (staged != null) {
+                        val fileId = staged.optString("id")
+                        val uploaded = call(
+                            base + "/work/files/" + fileId + "/upload",
+                            "POST",
+                            operationBody().put("data", Base64.encodeToString(file.bytes, Base64.NO_WRAP))
+                        )
+                        if (uploaded != null) {
+                            val attached = call(
+                                base + "/work/files/" + fileId + "/attach",
+                                "POST",
+                                operationBody().put("task_revision", taskRevision)
+                            )
+                            if (attached != null) {
+                                onStatus("Reference attached. Task revision and assignments were refreshed.")
+                                showAssignmentDetail = false
+                                groupId?.let { refreshGroup(it) }
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    error = e.message ?: "Reference upload failed."
+                } finally {
+                    loading = false
+                    referenceUploadTask = null
+                }
+            }
+        } else {
+            referenceUploadTask = null
+        }
+    }
+
     val proofPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) {
             scope.launch {
@@ -1176,6 +1228,31 @@ fun UniverseScreen(
             title = { Text(selectedTask?.optString("title").orEmpty() + " · " + selectedAssignment?.optString("state").orEmpty()) },
             text = {
                 Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+                    val referenceFiles = detail?.optJSONArray("references")?.toObjectList().orEmpty()
+                    Text("Reference files", color = CyanAccent, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+                    if (referenceFiles.isEmpty()) {
+                        Text("No reference files attached.", color = TextMuted, fontSize = 10.sp)
+                    } else {
+                        referenceFiles.forEach { reference ->
+                            TextButton(
+                                onClick = { downloadAttachment(reference.optString("id")) },
+                                enabled = !downloadBusy && !loading
+                            ) {
+                                Text("Save " + reference.optString("name", "reference file"))
+                            }
+                        }
+                    }
+                    if (isManager) {
+                        OutlinedButton(
+                            onClick = {
+                                referenceUploadTask = selectedTask
+                                referencePicker.launch(arrayOf("image/jpeg", "image/png", "application/pdf", "text/plain"))
+                            },
+                            enabled = !loading,
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("Add reference file") }
+                    }
+                    Spacer(Modifier.height(8.dp))
                     if (latest == null) {
                         Text("No submission has been recorded yet.", color = TextSecondary, fontSize = 12.sp)
                     } else {
@@ -1190,19 +1267,6 @@ fun UniverseScreen(
                                     enabled = !downloadBusy && !loading
                                 ) {
                                     Text(if (downloadBusy) "Preparing download…" else "Save proof file " + (index + 1))
-                                }
-                            }
-                        }
-                        val referenceFiles = detail?.optJSONArray("references")?.toObjectList().orEmpty()
-                        if (referenceFiles.isNotEmpty()) {
-                            Spacer(Modifier.height(6.dp))
-                            Text("Reference files", color = CyanAccent, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
-                            referenceFiles.forEach { reference ->
-                                TextButton(
-                                    onClick = { downloadAttachment(reference.optString("id")) },
-                                    enabled = !downloadBusy && !loading
-                                ) {
-                                    Text("Save " + reference.optString("name", "reference file"))
                                 }
                             }
                         }
