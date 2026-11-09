@@ -108,6 +108,7 @@ fun UniverseScreen(
     var selectedTask by remember { mutableStateOf<JSONObject?>(null) }
     var selectedAssignmentDetail by remember { mutableStateOf<JSONObject?>(null) }
     var submissionFiles by remember { mutableStateOf<List<UniverseUploadFile>>(emptyList()) }
+    var referenceUploadTask by remember { mutableStateOf<JSONObject?>(null) }
     var showAssignmentDetail by remember { mutableStateOf(false) }
     var showReview by remember { mutableStateOf(false) }
     var reviewDecision by remember { mutableStateOf("approved") }
