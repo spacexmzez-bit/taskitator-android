@@ -5,6 +5,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -23,6 +24,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.CustomPriority
 import com.example.data.network.TaskitatorWorkerApi
+import com.example.data.network.PhoneDeviceInfo
+import org.json.JSONObject
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.TaskitatorViewModel
 import kotlinx.coroutines.launch
@@ -69,12 +72,45 @@ fun SettingsScreen(
     var testResultMsg by remember { mutableStateOf<String?>(null) }
     var useByokState by remember(settings.useByok) { mutableStateOf(settings.useByok) }
     var activeModel by remember(settings.activeAiModel) { mutableStateOf(settings.activeAiModel) }
+    var proStatus by remember { mutableStateOf<JSONObject?>(null) }
+    var aiKeyMetadata by remember { mutableStateOf<JSONObject?>(null) }
+    var isRefreshingAi by remember { mutableStateOf(false) }
+    var aiStatusMessage by remember { mutableStateOf<String?>(null) }
 
-    // Phone lock state
-    var phoneTokensList by remember { mutableStateOf(settings.phoneTokens) }
+    // Phone lock state is server-authoritative. Raw tokens are shown only once after creation.
+    var phoneDevices by remember { mutableStateOf<List<PhoneDeviceInfo>>(emptyList()) }
     var newlyCreatedToken by remember { mutableStateOf<String?>(null) }
+    var newlyCreatedDeviceId by remember { mutableStateOf<String?>(null) }
     var isGeneratingToken by remember { mutableStateOf(false) }
+    var revokingDeviceId by remember { mutableStateOf<String?>(null) }
     var phoneErrorMessage by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(settings.authToken) {
+        if (settings.authToken.isBlank()) {
+            proStatus = null
+            aiKeyMetadata = null
+            phoneDevices = emptyList()
+        } else {
+            isRefreshingAi = true
+            val statusResult = TaskitatorWorkerApi.getProStatusDetails(settings.authToken)
+            statusResult.onSuccess { status ->
+                proStatus = status
+                val serverIsPro = status.optBoolean("isPro", false)
+                val serverByok = status.optBoolean("use_byok", false)
+                useByokState = serverByok
+                if (settings.isPro != serverIsPro || settings.useByok != serverByok) {
+                    viewModel.repository.updateSettings(settings.copy(isPro = serverIsPro, useByok = serverByok))
+                }
+            }.onFailure { aiStatusMessage = it.message ?: "Unable to refresh Pro status." }
+            val keyResult = TaskitatorWorkerApi.getAiKeysMetadataDetails(settings.authToken)
+            keyResult.onSuccess { aiKeyMetadata = it }
+                .onFailure { aiStatusMessage = it.message ?: "Unable to read AI provider status." }
+            val devicesResult = TaskitatorWorkerApi.getPhoneDevices(settings.authToken)
+            devicesResult.onSuccess { phoneDevices = it }
+                .onFailure { phoneErrorMessage = it.message ?: "Unable to read registered phones." }
+            isRefreshingAi = false
+        }
+    }
 
     Column(
         modifier = modifier
@@ -419,7 +455,17 @@ fun SettingsScreen(
                 }
 
                 3 -> {
-                    // TAB 3: AI & Pro
+                    val serverIsPro = proStatus?.optBoolean("isPro", settings.isPro) ?: settings.isPro
+                    val serverByok = proStatus?.optBoolean("use_byok", useByokState) ?: useByokState
+                    val hostedMode = serverIsPro && !serverByok
+                    val providers = aiKeyMetadata?.optJSONObject("providers")
+                    val selectedProvider = aiKeyMetadata?.optString("selected_provider")
+                        ?.takeIf { it.isNotBlank() } ?: settings.activeProvider
+                    val selectedMeta = providers?.optJSONObject(selectedProvider)
+                    val modelArray = selectedMeta?.optJSONArray("models")
+                    val providerModels = (0 until (modelArray?.length() ?: 0)).mapNotNull { modelArray?.optString(it) }
+                    val credits = proStatus?.optJSONObject("credits")
+
                     Card(
                         shape = RoundedCornerShape(12.dp),
                         colors = CardDefaults.cardColors(containerColor = DarkSurface),
@@ -435,12 +481,12 @@ fun SettingsScreen(
                                 Text("Pro Entitlement & AI", style = MaterialTheme.typography.titleMedium, color = TextPrimary, fontWeight = FontWeight.Bold)
                                 Surface(
                                     shape = RoundedCornerShape(8.dp),
-                                    color = if (settings.isPro) SuccessGreen.copy(alpha = 0.2f) else DarkSurfaceVariant,
-                                    border = androidx.compose.foundation.BorderStroke(1.dp, if (settings.isPro) SuccessGreen else DarkBorder)
+                                    color = if (serverIsPro) SuccessGreen.copy(alpha = 0.2f) else DarkSurfaceVariant,
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, if (serverIsPro) SuccessGreen else DarkBorder)
                                 ) {
                                     Text(
-                                        text = if (settings.isPro) "KEYO PRO ACTIVE" else "FREE ACCOUNT",
-                                        color = if (settings.isPro) SuccessGreen else TextSecondary,
+                                        text = if (serverIsPro) (proStatus?.optString("tier", "PRO")?.uppercase() ?: "PRO") + " ACTIVE" else "FREE ACCOUNT",
+                                        color = if (serverIsPro) SuccessGreen else TextSecondary,
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold,
                                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
@@ -448,11 +494,65 @@ fun SettingsScreen(
                                 }
                             }
 
-                            Spacer(modifier = Modifier.height(12.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    "Server entitlement: " + (proStatus?.optString("status", "not refreshed") ?: "not refreshed"),
+                                    color = TextSecondary,
+                                    fontSize = 11.sp,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                TextButton(
+                                    onClick = {
+                                        scope.launch {
+                                            isRefreshingAi = true
+                                            TaskitatorWorkerApi.getProStatusDetails(settings.authToken).onSuccess {
+                                                proStatus = it
+                                                val p = it.optBoolean("isPro", false)
+                                                val b = it.optBoolean("use_byok", false)
+                                                useByokState = b
+                                                viewModel.repository.updateSettings(settings.copy(isPro = p, useByok = b))
+                                            }.onFailure { aiStatusMessage = it.message }
+                                            TaskitatorWorkerApi.getAiKeysMetadataDetails(settings.authToken).onSuccess { aiKeyMetadata = it }
+                                            isRefreshingAi = false
+                                        }
+                                    },
+                                    enabled = !isRefreshingAi && settings.authToken.isNotBlank()
+                                ) { Text(if (isRefreshingAi) "Refreshing…" else "Refresh") }
+                            }
 
-                            // Keyo Activation Input
-                            if (!settings.isPro) {
-                                Text("Activate Keyo License Key:", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                            if (credits != null) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = DarkSurfaceVariant,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(Modifier.padding(12.dp)) {
+                                        Text("Hosted AI credits", color = CyanAccent, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                        Text(
+                                            "Daily: " + credits.optString("daily_remaining", "—") + " / " + credits.optString("daily_limit", "—") + " remaining",
+                                            color = TextPrimary,
+                                            fontSize = 12.sp
+                                        )
+                                        Text(
+                                            "Monthly: " + credits.optString("monthly_remaining", "—") + " / " + credits.optString("monthly_limit", "—") + " remaining",
+                                            color = TextPrimary,
+                                            fontSize = 12.sp
+                                        )
+                                        Text("Monthly cycle: 30 days · reset timezone: Asia/Riyadh", color = TextMuted, fontSize = 10.sp)
+                                    }
+                                }
+                            } else if (!serverIsPro) {
+                                Text(
+                                    "Free-plan allowances are enforced by the Worker. Exact numeric limits are not exposed by the status endpoint.",
+                                    color = TextMuted,
+                                    fontSize = 11.sp
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(14.dp))
+                            if (!serverIsPro) {
+                                Text("Activate Keyo license", style = MaterialTheme.typography.labelMedium, color = TextPrimary, fontWeight = FontWeight.SemiBold)
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
@@ -476,122 +576,204 @@ fun SettingsScreen(
                                             isActivatingKeyo = true
                                             keyoResultMsg = null
                                             scope.launch {
-                                                val res = TaskitatorWorkerApi.activateProKey(keyoActivationKey, settings.authToken)
+                                                val activated = TaskitatorWorkerApi.activateProKey(keyoActivationKey, settings.authToken)
+                                                if (activated.isFailure) {
+                                                    keyoResultMsg = activated.exceptionOrNull()?.message ?: "Activation failed."
+                                                } else {
+                                                    val refreshed = TaskitatorWorkerApi.getProStatusDetails(settings.authToken)
+                                                    refreshed.fold(
+                                                        onSuccess = { status ->
+                                                            proStatus = status
+                                                            val active = status.optBoolean("isPro", false)
+                                                            val byok = status.optBoolean("use_byok", false)
+                                                            if (active) {
+                                                                viewModel.repository.updateSettings(settings.copy(isPro = true, useByok = byok))
+                                                                useByokState = byok
+                                                                keyoActivationKey = ""
+                                                                keyoResultMsg = "Keyo entitlement verified by the Worker."
+                                                            } else {
+                                                                keyoResultMsg = "Activation was received, but the Worker does not report an active entitlement."
+                                                            }
+                                                        },
+                                                        onFailure = { keyoResultMsg = it.message ?: "Could not verify the activated entitlement." }
+                                                    )
+                                                }
                                                 isActivatingKeyo = false
-                                                res.fold(
-                                                    onSuccess = {
-                                                        keyoResultMsg = "Keyo Pro activated successfully!"
-                                                        viewModel.repository.updateSettings(settings.copy(isPro = true))
-                                                    },
-                                                    onFailure = { keyoResultMsg = it.message ?: "Activation failed." }
-                                                )
                                             }
                                         },
-                                        enabled = keyoActivationKey.isNotBlank() && !isActivatingKeyo,
+                                        enabled = keyoActivationKey.isNotBlank() && !isActivatingKeyo && settings.authToken.isNotBlank(),
                                         colors = ButtonDefaults.buttonColors(containerColor = CyanAccent)
                                     ) {
-                                        Text("Activate", color = DarkBackground, fontWeight = FontWeight.Bold)
+                                        Text(if (isActivatingKeyo) "Checking…" else "Activate", color = DarkBackground, fontWeight = FontWeight.Bold)
                                     }
                                 }
-
-                                if (keyoResultMsg != null) {
-                                    Spacer(modifier = Modifier.height(6.dp))
-                                    Text(keyoResultMsg!!, fontSize = 11.sp, color = CyanAccent)
-                                }
+                                if (keyoResultMsg != null) Text(keyoResultMsg!!, fontSize = 11.sp, color = CyanAccent)
                             }
 
                             Spacer(modifier = Modifier.height(16.dp))
+                            Text("AI provider vault", style = MaterialTheme.typography.labelMedium, color = TextPrimary, fontWeight = FontWeight.SemiBold)
+                            listOf("gemini" to "Google Gemini", "claude" to "Anthropic Claude").forEach { (provider, label) ->
+                                val meta = providers?.optJSONObject(provider)
+                                val saved = meta?.optBoolean("saved", false) == true
+                                val suffix = meta?.optString("suffix").orEmpty()
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(label, color = TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                        Text(
+                                            if (saved) "Saved in Worker vault" + if (suffix.isNotBlank()) " · ending " + suffix else "" else "No saved key",
+                                            color = if (saved) SuccessGreen else TextMuted,
+                                            fontSize = 10.sp
+                                        )
+                                    }
+                                    if (saved && !hostedMode) {
+                                        TextButton(
+                                            onClick = {
+                                                scope.launch {
+                                                    isTestingAi = true
+                                                    testResultMsg = null
+                                                    TaskitatorWorkerApi.testStoredKey(provider, settings.authToken).fold(
+                                                        onSuccess = { pair -> testResultMsg = pair.second },
+                                                        onFailure = { testResultMsg = it.message ?: "Key test failed." }
+                                                    )
+                                                    isTestingAi = false
+                                                }
+                                            },
+                                            enabled = !isTestingAi
+                                        ) { Text(if (isTestingAi) "Testing…" else "Test") }
+                                    }
+                                }
+                            }
 
-                            // Target AI Model Selection per Plan v5 Section 4
-                            Text("Target AI Model:", style = MaterialTheme.typography.labelMedium, color = TextPrimary, fontWeight = FontWeight.SemiBold)
-                            Spacer(modifier = Modifier.height(6.dp))
+                            if (testResultMsg != null) {
+                                Text(testResultMsg!!, color = CyanAccent, fontSize = 11.sp)
+                            }
 
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                val models = listOf(
-                                    Pair("gemini-3.5-flash-lite", "Gemini 3.5 Flash Lite"),
-                                    Pair("claude-haiku-5-5", "Claude Haiku 5.5")
-                                )
-                                models.forEach { (modelId, display) ->
-                                    val isSel = activeModel == modelId
-                                    Surface(
-                                        shape = RoundedCornerShape(10.dp),
-                                        color = if (isSel) ElectricBlue.copy(alpha = 0.2f) else DarkSurfaceVariant,
-                                        border = androidx.compose.foundation.BorderStroke(1.dp, if (isSel) ElectricBlue else DarkBorder),
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .clickable {
-                                                activeModel = modelId
-                                                val provider = if (modelId.startsWith("gemini")) "gemini" else "claude"
-                                                viewModel.repository.updateSettings(settings.copy(activeAiModel = modelId, activeProvider = provider))
-                                                scope.launch { TaskitatorWorkerApi.setAiProvider(provider, settings.authToken) }
-                                            }
-                                    ) {
-                                        Column(modifier = Modifier.padding(10.dp)) {
-                                            Text(display, color = if (isSel) ElectricBlue else TextPrimary, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                            Text(modelId, color = TextMuted, fontSize = 10.sp)
+                            Spacer(modifier = Modifier.height(14.dp))
+                            Text("Selected provider", style = MaterialTheme.typography.labelMedium, color = TextPrimary, fontWeight = FontWeight.SemiBold)
+                            if (hostedMode) {
+                                Text("Hosted Pro AI is active. Provider and model routing are controlled by Taskitator.", color = TextSecondary, fontSize = 11.sp)
+                            } else {
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                                    listOf("gemini" to "Gemini", "claude" to "Claude").forEach { (provider, label) ->
+                                        val saved = providers?.optJSONObject(provider)?.optBoolean("saved", false) == true
+                                        val selected = selectedProvider == provider
+                                        OutlinedButton(
+                                            onClick = {
+                                                scope.launch {
+                                                    val result = TaskitatorWorkerApi.setAiProvider(provider, settings.authToken)
+                                                    result.fold(
+                                                        onSuccess = { ok ->
+                                                            if (ok) {
+                                                                val firstModel = providers?.optJSONObject(provider)?.optJSONArray("models")?.optString(0).orEmpty()
+                                                                viewModel.repository.updateSettings(settings.copy(activeProvider = provider, activeAiModel = firstModel))
+                                                                activeModel = firstModel
+                                                                TaskitatorWorkerApi.getAiKeysMetadataDetails(settings.authToken).onSuccess { aiKeyMetadata = it }
+                                                                aiStatusMessage = null
+                                                            } else aiStatusMessage = "The Worker did not select this provider."
+                                                        },
+                                                        onFailure = { aiStatusMessage = it.message ?: "Provider selection failed." }
+                                                    )
+                                                }
+                                            },
+                                            enabled = saved && !isRefreshingAi,
+                                            colors = ButtonDefaults.outlinedButtonColors(contentColor = if (selected) ElectricBlue else TextSecondary),
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Text(if (selected) "✓ " + label else label)
+                                        }
+                                    }
+                                }
+
+                                if (providerModels.isNotEmpty()) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text("Model", color = TextSecondary, fontSize = 11.sp)
+                                    providerModels.forEach { model ->
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth().clickable {
+                                                activeModel = model
+                                                viewModel.repository.updateSettings(settings.copy(activeAiModel = model))
+                                            }.padding(vertical = 5.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            RadioButton(
+                                                selected = activeModel == model,
+                                                onClick = {
+                                                    activeModel = model
+                                                    viewModel.repository.updateSettings(settings.copy(activeAiModel = model))
+                                                }
+                                            )
+                                            Text(model, color = TextPrimary, fontSize = 12.sp)
                                         }
                                     }
                                 }
                             }
 
-                            Spacer(modifier = Modifier.height(16.dp))
-
-                            // Hosted vs BYOK Mode Toggle
+                            Spacer(modifier = Modifier.height(14.dp))
                             Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        useByokState = !useByokState
-                                        viewModel.repository.updateSettings(settings.copy(useByok = useByokState))
-                                        scope.launch { TaskitatorWorkerApi.toggleUseByok(useByokState, settings.authToken) }
-                                    },
+                                modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Column(modifier = Modifier.weight(1f)) {
+                                Column(Modifier.weight(1f)) {
                                     Text("Use Personal BYOK Key", color = TextPrimary, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                                    Text("Route audits through your personal key in the Worker KeyVault.", color = TextMuted, fontSize = 11.sp)
+                                    Text(
+                                        if (serverIsPro) "Switch between hosted Pro credits and your own saved provider key." else "Free accounts use a saved personal provider key.",
+                                        color = TextMuted,
+                                        fontSize = 11.sp
+                                    )
                                 }
                                 Switch(
-                                    checked = useByokState,
-                                    onCheckedChange = {
-                                        useByokState = it
-                                        viewModel.repository.updateSettings(settings.copy(useByok = it))
-                                        scope.launch { TaskitatorWorkerApi.toggleUseByok(it, settings.authToken) }
+                                    checked = serverByok,
+                                    enabled = serverIsPro && !isRefreshingAi,
+                                    onCheckedChange = { newValue ->
+                                        scope.launch {
+                                            val result = TaskitatorWorkerApi.toggleUseByok(newValue, settings.authToken)
+                                            result.fold(
+                                                onSuccess = { ok ->
+                                                    if (ok) {
+                                                        useByokState = newValue
+                                                        viewModel.repository.updateSettings(settings.copy(useByok = newValue))
+                                                        TaskitatorWorkerApi.getProStatusDetails(settings.authToken).onSuccess { proStatus = it }
+                                                    } else aiStatusMessage = "The Worker rejected the BYOK preference change."
+                                                },
+                                                onFailure = { aiStatusMessage = it.message ?: "Could not change BYOK mode." }
+                                            )
+                                        }
                                     }
                                 )
                             }
 
-                            Spacer(modifier = Modifier.height(14.dp))
+                            if (aiStatusMessage != null) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(aiStatusMessage!!, color = PriorityP1, fontSize = 11.sp)
+                            }
 
-                            // Key Protection Explanation & Web Custom Tab Button (VERIFIED 11.4)
+                            Spacer(modifier = Modifier.height(12.dp))
                             Surface(
                                 shape = RoundedCornerShape(10.dp),
                                 color = DarkSurfaceVariant,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Column(modifier = Modifier.padding(12.dp)) {
-                                    Text("Vault Security Notice", style = MaterialTheme.typography.labelMedium, color = CyanAccent, fontWeight = FontWeight.Bold)
-                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text("Vault security", style = MaterialTheme.typography.labelMedium, color = CyanAccent, fontWeight = FontWeight.Bold)
                                     Text(
-                                        text = "Keys are encrypted with API_VAULT_KEYS inside Cloudflare Durable Object storage, never transmitted to clients, and never stored locally on this phone. Add or update keys on the website.",
+                                        "API keys remain in the encrypted Worker KeyVault and are never stored in this app. Saving or replacing a key requires the website's verified account flow.",
                                         fontSize = 11.sp,
                                         color = TextSecondary
                                     )
-                                    Spacer(modifier = Modifier.height(10.dp))
-
+                                    Spacer(modifier = Modifier.height(8.dp))
                                     Button(
                                         onClick = {
-                                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://taskitator.mazendev.com"))
-                                            context.startActivity(intent)
+                                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://taskitator.mazendev.com")))
                                         },
                                         colors = ButtonDefaults.buttonColors(containerColor = CyanAccent),
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
-                                        Text("Manage AI Keys on Website (Custom Tab)", color = DarkBackground, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                        Text("Manage AI keys securely on website", color = DarkBackground, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                                     }
                                 }
                             }
