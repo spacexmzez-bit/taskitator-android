@@ -38,6 +38,7 @@ import java.util.Calendar
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 
 private data class UniverseUploadFile(val name: String, val mime: String, val bytes: ByteArray, val hash: String)
 private data class UniversePendingDownload(val name: String, val mime: String, val bytes: ByteArray)
@@ -982,7 +983,7 @@ fun UniverseScreen(
                                 )
                                 Text(
                                     "State: " + state + " · due " +
-                                        if (dueAt > 0L) SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(dueAt)) else "no due date",
+                                        (if (dueAt > 0L) SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).apply { timeZone = TimeZone.getTimeZone("Asia/Riyadh") }.format(Date(dueAt)) else "no due date"),
                                     color = TextMuted,
                                     fontSize = 10.sp
                                 )
@@ -1110,11 +1111,12 @@ fun UniverseScreen(
                     ) {
                         OutlinedButton(
                             onClick = {
-                                val initial = Calendar.getInstance()
+                                val riyadh = TimeZone.getTimeZone("Asia/Riyadh")
+                                val initial = Calendar.getInstance(riyadh)
                                 DatePickerDialog(
                                     context,
                                     { _, year, month, day ->
-                                        val due = Calendar.getInstance().apply {
+                                        val due = Calendar.getInstance(riyadh).apply {
                                             set(year, month, day, 23, 59, 0)
                                             set(Calendar.MILLISECOND, 0)
                                         }
@@ -1133,7 +1135,7 @@ fun UniverseScreen(
                     }
                     if (dueAtMillis != null) {
                         Text(
-                            "Due: " + SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(dueAtMillis!!)) + " (end of day)",
+                            "Due: " + SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).apply { timeZone = TimeZone.getTimeZone("Asia/Riyadh") }.format(Date(dueAtMillis!!)) + " (end of day)",
                             color = CyanAccent,
                             fontSize = 11.sp
                         )
