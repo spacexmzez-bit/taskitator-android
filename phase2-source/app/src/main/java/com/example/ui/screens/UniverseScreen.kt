@@ -554,6 +554,9 @@ fun UniverseScreen(
                     put("task_revision", taskRevision)
                     put("text", submissionText.trim())
                     put("files", JSONArray(fileIds))
+                    if (task.optString("audit_mode") == "either") {
+                        put("review_path", submissionReviewPath)
+                    }
                 }
                 if (call(base + "/work/assignments/" + aid + "/submit", "POST", body) != null) {
                     showSubmit = false
