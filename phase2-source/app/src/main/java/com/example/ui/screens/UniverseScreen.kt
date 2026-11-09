@@ -1265,8 +1265,11 @@ fun UniverseScreen(
             it.optString("verdict") == "approved" &&
                 it.optInt("task_revision", -1) == selectedTask?.optInt("revision", 1)
         } == true
-        val canReview = groupRole in listOf("owner", "admin", "reviewer") &&
-            latest != null && !isSubmitter && selectedAssignment?.optString("state") == "pending" &&
+        val isAllowedReviewer = groupRole in listOf("owner", "admin") ||
+            selectedTask?.optJSONArray("reviewers")?.containsString(currentUserId) == true
+        val canReview = isAllowedReviewer && latest != null &&
+            (groupRole == "owner" || !isSubmitter) &&
+            selectedAssignment?.optString("state") == "pending" &&
             humanReviewRequired && (auditMode != "both" || aiApproved)
         val isAssignedToMe = if (selectedAssignment?.isNull("account_id") == true) {
             selectedTask?.optJSONArray("members")?.containsString(currentUserId) == true
