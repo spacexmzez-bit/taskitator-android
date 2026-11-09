@@ -77,7 +77,7 @@ fun PhoneAccessDialog(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
-                        text = "GET /api/phone-access?token=$phoneToken",
+                        text = "GET https://taskitator-sync.spacexmzez.workers.dev/status?format=text\nAuthorization: Bearer $phoneToken",
                         style = MaterialTheme.typography.bodyMedium,
                         color = LightBlue,
                         modifier = Modifier.padding(10.dp)
@@ -86,7 +86,7 @@ fun PhoneAccessDialog(
 
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "Rule logic: Allowed if an Emergency Bypass is active, or user is inside a scheduled break, or all tasks due today are completed.",
+                    text = "MacroDroid reads device_unlocked = true|false from the response. Keep the phone token in the Authorization header; never place it in the URL.",
                     style = MaterialTheme.typography.labelSmall,
                     color = TextMuted
                 )
