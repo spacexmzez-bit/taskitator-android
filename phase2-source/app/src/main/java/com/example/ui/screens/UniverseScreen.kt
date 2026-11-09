@@ -510,6 +510,21 @@ fun UniverseScreen(
         }
     }
 
+    fun completeAssignment() {
+        val assignment = selectedAssignment ?: return
+        val task = selectedTask ?: return
+        val body = operationBody().apply {
+            put("revision", assignment.optInt("revision", 1))
+            put("task_revision", task.optInt("revision", 1))
+        }
+        postGroupAction(
+            base + "/work/assignments/" + assignment.optString("id") + "/complete",
+            body,
+            "Task completed."
+        )
+        showAssignmentDetail = false
+    }
+
     fun reviewAssignment() {
         val assignment = selectedAssignment ?: return
         val task = selectedTask ?: return
@@ -1142,6 +1157,13 @@ fun UniverseScreen(
         val canReview = groupRole in listOf("owner", "admin", "reviewer") &&
             latest != null && !isSubmitter && selectedAssignment?.optString("state") == "pending" &&
             humanReviewRequired && (auditMode != "both" || aiApproved)
+        val isAssignedToMe = if (selectedAssignment?.isNull("account_id") == true) {
+            selectedTask?.optJSONArray("members")?.containsString(currentUserId) == true
+        } else {
+            selectedAssignment?.optString("account_id") == currentUserId
+        }
+        val canComplete = auditMode == "none" && isAssignedToMe &&
+            selectedAssignment?.optString("state") in listOf("open", "rejected")
         AlertDialog(
             onDismissRequest = { showAssignmentDetail = false },
             title = { Text(selectedTask?.optString("title").orEmpty() + " · " + selectedAssignment?.optString("state").orEmpty()) },
@@ -1177,7 +1199,7 @@ fun UniverseScreen(
                                 }
                             }
                         }
-                        Text("Decision: " + latest.optString("decision", "pending"), color = TextSecondary, fontSize = 11.sp)
+                        Text("Decision: " + if (latest.isNull("decision")) "pending" else latest.optString("decision"), color = TextSecondary, fontSize = 11.sp)
                         Text(latest.optString("reason"), color = TextMuted, fontSize = 11.sp)
                     }
                     if (canReview) {
@@ -1188,8 +1210,11 @@ fun UniverseScreen(
             },
             confirmButton = {
                 Row {
+                    if (canComplete) {
+                        TextButton(onClick = { completeAssignment() }, enabled = !loading) { Text("Complete task") }
+                    }
                     if (aiReviewRequired && isSubmitter && latest != null &&
-                        selectedAssignment?.optString("state") == "pending" &&
+                        selectedAssignment?.optString("state") == "pending" && !aiApproved &&
                         (latest.isNull("decision") || latest.optString("decision").isBlank())
                     ) {
                         TextButton(onClick = {
@@ -1217,8 +1242,8 @@ fun UniverseScreen(
         AlertDialog(
             onDismissRequest = { showReview = false },
             title = { Text(if (reviewDecision == "approved") "Approve submission" else "Reject submission") },
-            text = { Column { OutlinedTextField(value = reviewReason, onValueChange = { reviewReason = it }, label = { Text("Reason / feedback") }, minLines = 2); Text("A review reason is required by the server.", color = TextMuted, fontSize = 10.sp) } },
-            confirmButton = { TextButton(onClick = { reviewAssignment() }, enabled = !loading && reviewReason.isNotBlank()) { Text("Confirm") } },
+            text = { OutlinedTextField(value = reviewReason, onValueChange = { reviewReason = it }, label = { Text("Reason / feedback (optional)") }, minLines = 2) },
+            confirmButton = { TextButton(onClick = { reviewAssignment() }, enabled = !loading) { Text("Confirm") } },
             dismissButton = { TextButton(onClick = { showReview = false }) { Text("Cancel") } }
         )
     }
