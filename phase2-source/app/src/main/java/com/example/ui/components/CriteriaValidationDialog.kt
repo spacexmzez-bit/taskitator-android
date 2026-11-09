@@ -198,7 +198,8 @@ fun CriteriaValidationDialog(
                                             val result = TaskitatorWorkerApi.validateCriteria(
                                                 criteria = criteriaInput,
                                                 exemplarNote = exemplarInput.takeIf { it.isNotBlank() },
-                                                token = authToken
+                                                token = authToken,
+                                                taskTitle = taskTitle
                                             )
                                             isChecking = false
                                             result.fold(
@@ -297,7 +298,7 @@ fun CriteriaValidationDialog(
                                                 }
                                             }
 
-                                            if (res.score >= 9) {
+                                            if (res.score >= 8) {
                                                 Spacer(modifier = Modifier.height(10.dp))
                                                 OutlinedButton(
                                                     onClick = {
@@ -307,7 +308,7 @@ fun CriteriaValidationDialog(
                                                     colors = ButtonDefaults.outlinedButtonColors(contentColor = CyanAccent),
                                                     border = androidx.compose.foundation.BorderStroke(1.dp, CyanAccent)
                                                 ) {
-                                                    Text(savedSuccessMsg ?: "⭐ Save as Custom Criteria (9+/10)", fontSize = 11.sp)
+                                                    Text(savedSuccessMsg ?: "⭐ Save as Custom Criteria (8+/10)", fontSize = 11.sp)
                                                 }
                                             }
                                         }
