@@ -396,11 +396,12 @@ fun UniverseScreen(
         val title = newTaskTitle.trim()
         val criteria = newTaskCriteria.trim()
         val projectId = selectedProjectId.ifBlank { projects.firstOrNull()?.optString("id").orEmpty() }
-        if (title.isBlank() || criteria.isBlank() || projectId.isBlank() || groupId == null) {
-            error = "Choose a project and provide a title and verifiable criteria."
+        val requiresAiCriteria = newTaskAuditMode in setOf("ai", "either", "both")
+        if (title.isBlank() || projectId.isBlank() || groupId == null || requiresAiCriteria && criteria.isBlank()) {
+            error = if (requiresAiCriteria) "Choose a project and provide a title and AI review criteria." else "Choose a project and provide a task title."
             return
         }
-        if (newTaskAuditMode in setOf("ai", "either", "both") && serverValidationRequired && criteriaValidation?.optBoolean("passed", false) != true) {
+        if (requiresAiCriteria && serverValidationRequired && criteriaValidation?.optBoolean("passed", false) != true) {
             error = "Validate the current title and criteria at 7/10 or higher before creating this AI-reviewed task."
             return
         }
