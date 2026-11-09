@@ -118,6 +118,7 @@ fun UniverseScreen(
     var aiQuoteTaskId by remember { mutableStateOf("") }
     var aiResultMessage by remember { mutableStateOf<String?>(null) }
     var proUseByok by remember { mutableStateOf(false) }
+    var serverIsPro by remember { mutableStateOf(isPro) }
     var pendingDownload by remember { mutableStateOf<UniversePendingDownload?>(null) }
     var downloadBusy by remember { mutableStateOf(false) }
 
@@ -177,6 +178,7 @@ fun UniverseScreen(
         val account = me?.optJSONObject("account")
         currentUserId = account?.optString("user_id").orEmpty()
         val pro = TaskitatorWorkerApi.getProStatusDetails(authToken).getOrNull()
+        serverIsPro = pro?.optBoolean("isPro", isPro) ?: isPro
         proUseByok = pro?.optBoolean("use_byok", false) ?: false
     }
 
@@ -525,7 +527,7 @@ fun UniverseScreen(
 
     fun startUniverseAiReview(assignment: JSONObject, task: JSONObject) {
         val aid = assignment.optString("id")
-        val mode = if (task.optString("mode") == "shared" || (isPro && !proUseByok)) "hosted" else "personal"
+        val mode = if (task.optString("mode") == "shared" || (serverIsPro && !proUseByok)) "hosted" else "personal"
         aiQuoteMode = mode
         aiQuoteAssignmentId = aid
         aiQuoteTaskId = task.optString("id")
@@ -619,7 +621,7 @@ fun UniverseScreen(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
                     onClick = { showCreateGroup = true },
-                    enabled = isPro && !loading,
+                    enabled = serverIsPro && !loading,
                     modifier = Modifier.weight(1f)
                 ) { Text("Create Universe") }
                 OutlinedButton(
@@ -635,7 +637,7 @@ fun UniverseScreen(
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
             )
-            if (!isPro) Text("Creating a Universe requires active Pro. You can still join an existing one.", color = TextMuted, fontSize = 11.sp)
+            if (!serverIsPro) Text("Creating a Universe requires active Pro. You can still join an existing one.", color = TextMuted, fontSize = 11.sp)
             Spacer(Modifier.height(10.dp))
             if (groups.isEmpty()) {
                 Text("No Universes are linked to this account.", color = TextSecondary, fontSize = 12.sp)
@@ -857,7 +859,7 @@ fun UniverseScreen(
                             )
                         }
 
-                        val consentEnabled = lockConsent?.optInt("enabled", 0) == 1 || lockConsent?.optBoolean("enabled", false) == true
+                        val consentEnabled = lockConsent?.optFlag("enabled", false) ?: false
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
