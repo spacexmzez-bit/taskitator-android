@@ -727,7 +727,13 @@ fun UniverseScreen(
                                         Text(task.optString("criteria"), color = TextSecondary, fontSize = 11.sp)
                                         Text(
                                             task.optString("mode") + " · " +
-                                                (if (task.optBoolean("ai_required")) "AI review required" else "standard review") +
+                                                (when (task.optString("audit_mode", "none")) {
+                                                    "human" -> "human review"
+                                                    "ai" -> "AI review"
+                                                    "either" -> "AI or human review"
+                                                    "both" -> "AI then human review"
+                                                    else -> "no audit"
+                                                }) +
                                                 " · revision " + task.optInt("revision", 1),
                                             color = TextMuted,
                                             fontSize = 10.sp
