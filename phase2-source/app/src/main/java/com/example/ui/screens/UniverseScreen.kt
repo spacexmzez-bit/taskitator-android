@@ -82,6 +82,7 @@ fun UniverseScreen(
     var locks by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var groupSettings by remember { mutableStateOf<JSONObject?>(null) }
     var lockConsent by remember { mutableStateOf<JSONObject?>(null) }
+    var lockEpoch by remember { mutableStateOf(0L) }
     var currentUserId by remember { mutableStateOf("") }
     var currentTab by remember { mutableStateOf("Work") }
     var joinToken by remember { mutableStateOf("") }
@@ -169,7 +170,9 @@ fun UniverseScreen(
         val activityResult = call(base + "/activity")
         activity = activityResult?.optJSONArray("events")?.toObjectList() ?: emptyList()
         groupSettings = call(base + "/settings")
-        lockConsent = call(base + "/consent")?.optJSONObject("consent")
+        val consentResult = call(base + "/consent")
+        lockConsent = consentResult?.optJSONObject("consent")
+        lockEpoch = consentResult?.optLong("epoch", 0L) ?: 0L
         locks = call(base + "/locks")?.optJSONArray("assignments")?.toObjectList() ?: emptyList()
         selectedProjectId = projects.firstOrNull()?.optString("id").orEmpty()
         loading = false
@@ -954,26 +957,70 @@ fun UniverseScreen(
                             )
                         }
 
-                        if (isManager) {
-                            Text("Assignment lock eligibility", color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                            locks.forEach { lock ->
-                                val id = lock.optString("id")
-                                val eligible = lock.optInt("eligible", 0) == 1 || lock.optBoolean("eligible", false)
+                        Text("Assignment lock eligibility", color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                        if (locks.isEmpty()) {
+                            Text("No eligible individual assignments are available yet. Set a due date on an Everyone task first.", color = TextMuted, fontSize = 10.sp)
+                        }
+                        locks.forEach { lock ->
+                            val id = lock.optString("id")
+                            val eligible = lock.optInt("eligible", 0) == 1 || lock.optBoolean("eligible", false)
+                            val taskData = try { JSONObject(lock.optString("data", "{}")) } catch (_: Exception) { JSONObject() }
+                            val title = taskData.optString("title", id)
+                            val dueAt = taskData.optLong("due_at", 0L)
+                            val state = lock.optString("state")
+                            val canSetEligibility = state in listOf("open", "rejected") && dueAt > 0L
+                            val isMine = lock.optString("account_id") == currentUserId
+                            val acceptedEpoch = lock.optLong("accepted_epoch", -1L)
+                            val acceptedThisEpoch = acceptedEpoch == lockEpoch && lockEpoch > 0L
+                            val canAcceptNotice = isMine && eligible && consentEnabled && !acceptedThisEpoch &&
+                                canSetEligibility
+                            Column(Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
+                                Text(
+                                    title + " · " + lock.optString("account_id").take(24),
+                                    color = TextSecondary,
+                                    fontSize = 11.sp
+                                )
+                                Text(
+                                    "State: " + state + " · due " +
+                                        if (dueAt > 0L) SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(dueAt)) else "no due date",
+                                    color = TextMuted,
+                                    fontSize = 10.sp
+                                )
                                 Row(
-                                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                    modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text(id.take(24), color = TextSecondary, fontSize = 10.sp, modifier = Modifier.weight(1f))
-                                    Switch(
-                                        checked = eligible,
-                                        onCheckedChange = { value ->
-                                            postGroupAction(base + "/locks/" + id, operationBody()
-                                                .put("eligible", value)
-                                                .put("revision", lock.optInt("revision", 1))
-                                                .put("task_revision", lock.optInt("task_revision", 1)), "Lock eligibility updated.")
-                                        }
-                                    )
+                                    if (isManager) {
+                                        Text("Eligible for phone lock", color = TextPrimary, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                                        Switch(
+                                            checked = eligible,
+                                            enabled = canSetEligibility,
+                                            onCheckedChange = { value ->
+                                                postGroupAction(base + "/locks/" + id, operationBody()
+                                                    .put("eligible", value)
+                                                    .put("revision", lock.optInt("revision", 1))
+                                                    .put("task_revision", lock.optInt("task_revision", 1)), "Lock eligibility updated.")
+                                            }
+                                        )
+                                    }
+                                    if (canAcceptNotice) {
+                                        TextButton(
+                                            onClick = {
+                                                postGroupAction(base + "/locks/" + id + "/accept", operationBody()
+                                                    .put("revision", lock.optInt("revision", 1))
+                                                    .put("task_revision", lock.optInt("task_revision", 1)), "Shorter lock notice accepted.")
+                                            }
+                                        ) { Text("Accept shorter notice") }
+                                    } else if (isMine && eligible && acceptedThisEpoch) {
+                                        Text("Shorter notice accepted", color = SuccessGreen, fontSize = 10.sp)
+                                    }
+                                }
+                                if (isManager && !canSetEligibility) {
+                                    Text("Only open or rejected individual assignments with a due date can be enabled.", color = TextMuted, fontSize = 10.sp)
+                                }
+                                if (isMine && eligible && !consentEnabled) {
+                                    Text("Enable consent above before accepting shorter notice.", color = WarningAmber, fontSize = 10.sp)
                                 }
                             }
                         }
