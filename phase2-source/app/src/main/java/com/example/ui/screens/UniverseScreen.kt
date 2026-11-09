@@ -1212,8 +1212,10 @@ fun UniverseScreen(
         val humanReviewRequired = auditMode == "human" || auditMode == "both" || (auditMode == "either" && reviewPath == "human")
         val aiReviewRequired = auditMode == "ai" || auditMode == "both" || (auditMode == "either" && reviewPath == "ai")
         val aiAttestation = detail?.optJSONObject("ai_attestation")
-        val aiApproved = aiAttestation?.optString("verdict") == "approved" &&
-            aiAttestation.optInt("task_revision", -1) == selectedTask?.optInt("revision", 1)
+        val aiApproved = aiAttestation?.let {
+            it.optString("verdict") == "approved" &&
+                it.optInt("task_revision", -1) == selectedTask?.optInt("revision", 1)
+        } == true
         val canReview = groupRole in listOf("owner", "admin", "reviewer") &&
             latest != null && !isSubmitter && selectedAssignment?.optString("state") == "pending" &&
             humanReviewRequired && (auditMode != "both" || aiApproved)
@@ -1271,7 +1273,7 @@ fun UniverseScreen(
                                 }
                             }
                         }
-                        Text("Decision: " + if (latest.isNull("decision")) "pending" else latest.optString("decision"), color = TextSecondary, fontSize = 11.sp)
+                        Text("Decision: " + (if (latest.isNull("decision")) "pending" else latest.optString("decision")), color = TextSecondary, fontSize = 11.sp)
                         Text(latest.optString("reason"), color = TextMuted, fontSize = 11.sp)
                     }
                     if (canReview) {
