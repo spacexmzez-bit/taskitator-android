@@ -782,7 +782,6 @@ fun SettingsScreen(
                 }
 
                 4 -> {
-                    // TAB 4: Phone Lock (MacroDroid contract per 11.6)
                     Card(
                         shape = RoundedCornerShape(12.dp),
                         colors = CardDefaults.cardColors(containerColor = DarkSurface),
@@ -793,38 +792,45 @@ fun SettingsScreen(
                             Text("MacroDroid Phone Lock Integration", style = MaterialTheme.typography.titleMedium, color = TextPrimary, fontWeight = FontWeight.Bold)
                             Spacer(modifier = Modifier.height(6.dp))
                             Text(
-                                text = "MacroDroid polls the Worker status endpoint with a phone token:\nGET https://taskitator-sync.spacexmzez.workers.dev/?action=status&format=text\nReturns device_unlocked = true|false.",
+                                "MacroDroid should request the Worker status endpoint using the phone token in an Authorization header. Never put the token in the URL.",
                                 fontSize = 11.sp,
                                 color = TextSecondary
                             )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Surface(
+                                color = DarkSurfaceVariant,
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(Modifier.padding(10.dp)) {
+                                    Text("GET https://taskitator-sync.spacexmzez.workers.dev/status?format=text", color = TextPrimary, fontSize = 11.sp)
+                                    Text("Header: Authorization: Bearer <PHONE_TOKEN>", color = CyanAccent, fontSize = 11.sp)
+                                    Text("Response: device_unlocked = true|false", color = TextSecondary, fontSize = 11.sp)
+                                }
+                            }
 
                             Spacer(modifier = Modifier.height(14.dp))
-
-                            // Token generation
                             Button(
                                 onClick = {
                                     isGeneratingToken = true
                                     phoneErrorMessage = null
                                     scope.launch {
-                                        val res = TaskitatorWorkerApi.createPhoneToken(settings.authToken)
-                                        isGeneratingToken = false
-                                        res.fold(
-                                            onSuccess = { token ->
-                                                newlyCreatedToken = token
-                                                phoneTokensList = phoneTokensList + token
-                                                viewModel.repository.updateSettings(settings.copy(phoneTokens = phoneTokensList))
+                                        TaskitatorWorkerApi.createPhoneDevice(settings.authToken, "Android " + Build.MODEL).fold(
+                                            onSuccess = { created ->
+                                                newlyCreatedToken = created.token
+                                                newlyCreatedDeviceId = created.device.id
+                                                TaskitatorWorkerApi.getPhoneDevices(settings.authToken).onSuccess { phoneDevices = it }
                                             },
-                                            onFailure = {
-                                                phoneErrorMessage = it.message ?: "Failed to generate phone token."
-                                            }
+                                            onFailure = { phoneErrorMessage = it.message ?: "Failed to generate a phone token." }
                                         )
+                                        isGeneratingToken = false
                                     }
                                 },
-                                enabled = !isGeneratingToken,
+                                enabled = !isGeneratingToken && settings.authToken.isNotBlank(),
                                 colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text(if (isGeneratingToken) "Generating..." else "Create New Phone Token", fontWeight = FontWeight.Bold)
+                                Text(if (isGeneratingToken) "Generating…" else "Register this phone", fontWeight = FontWeight.Bold)
                             }
 
                             if (newlyCreatedToken != null) {
@@ -836,20 +842,79 @@ fun SettingsScreen(
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Column(modifier = Modifier.padding(10.dp)) {
-                                        Text("⚠️ Copy this token now. It will not be shown again:", color = WarningAmber, fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text("Copy this token now. The Worker will not reveal it again.", color = WarningAmber, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                        Spacer(modifier = Modifier.height(6.dp))
                                         Text(newlyCreatedToken!!, color = TextPrimary, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                                         Spacer(modifier = Modifier.height(6.dp))
                                         Button(
                                             onClick = {
                                                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                                 clipboard.setPrimaryClip(ClipData.newPlainText("phone_token", newlyCreatedToken))
-                                                Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
+                                                Toast.makeText(context, "Copied token", Toast.LENGTH_SHORT).show()
                                             },
                                             colors = ButtonDefaults.buttonColors(containerColor = WarningAmber),
                                             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                                         ) {
-                                            Text("Copy Token", color = DarkBackground, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                            Text("Copy token", color = DarkBackground, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                        TextButton(onClick = { newlyCreatedToken = null; newlyCreatedDeviceId = null }) {
+                                            Text("Hide token", color = TextSecondary)
+                                        }
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(14.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Registered phones", color = TextPrimary, fontWeight = FontWeight.SemiBold)
+                                TextButton(
+                                    onClick = {
+                                        scope.launch {
+                                            TaskitatorWorkerApi.getPhoneDevices(settings.authToken).onSuccess { phoneDevices = it }
+                                                .onFailure { phoneErrorMessage = it.message }
+                                        }
+                                    },
+                                    enabled = settings.authToken.isNotBlank()
+                                ) { Text("Refresh") }
+                            }
+                            if (phoneDevices.isEmpty()) {
+                                Text("No active phone tokens are registered.", color = TextMuted, fontSize = 11.sp)
+                            } else {
+                                phoneDevices.forEach { device ->
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(Modifier.weight(1f)) {
+                                            Text(device.label, color = TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                            Text(device.status + if (device.createdAt.isNotBlank()) " · " + device.createdAt else "", color = TextMuted, fontSize = 10.sp)
+                                        }
+                                        TextButton(
+                                            onClick = {
+                                                revokingDeviceId = device.id
+                                                scope.launch {
+                                                    TaskitatorWorkerApi.revokePhoneDevice(device.id, settings.authToken).fold(
+                                                        onSuccess = { revoked ->
+                                                            if (revoked) {
+                                                                phoneDevices = phoneDevices.filterNot { it.id == device.id }
+                                                                if (newlyCreatedDeviceId == device.id) {
+                                                                    newlyCreatedToken = null
+                                                                    newlyCreatedDeviceId = null
+                                                                }
+                                                            } else phoneErrorMessage = "The Worker did not revoke this phone token."
+                                                        },
+                                                        onFailure = { phoneErrorMessage = it.message ?: "Could not revoke phone token." }
+                                                    )
+                                                    revokingDeviceId = null
+                                                }
+                                            },
+                                            enabled = revokingDeviceId == null && device.status == "active"
+                                        ) {
+                                            Text(if (revokingDeviceId == device.id) "Revoking…" else "Revoke", color = PriorityP1)
                                         }
                                     }
                                 }
