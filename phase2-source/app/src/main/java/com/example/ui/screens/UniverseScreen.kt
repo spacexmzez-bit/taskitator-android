@@ -48,6 +48,14 @@ private fun JSONArray.toObjectList(): List<JSONObject> =
 private fun JSONArray.containsString(value: String): Boolean =
     (0 until length()).any { optString(it) == value }
 
+private fun JSONObject.optFlag(name: String, default: Boolean = false): Boolean =
+    when (val value = opt(name)) {
+        is Boolean -> value
+        is Number -> value.toInt() != 0
+        is String -> value == "true" || value == "1"
+        else -> default
+    }
+
 private fun operationBody(): JSONObject =
     JSONObject().put("operation_id", TaskitatorWorkerApi.newOperationId())
 
@@ -87,6 +95,7 @@ fun UniverseScreen(
     var newTaskCriteria by remember { mutableStateOf("") }
     var newTaskMode by remember { mutableStateOf("everyone") }
     var newTaskAiRequired by remember { mutableStateOf(false) }
+    var criteriaValidation by remember { mutableStateOf<JSONObject?>(null) }
     var dueAtMillis by remember { mutableStateOf<Long?>(null) }
     var selectedProjectId by remember { mutableStateOf("") }
     var showInvite by remember { mutableStateOf(false) }
@@ -186,6 +195,7 @@ fun UniverseScreen(
     val groupRole = group?.optString("role").orEmpty()
     val groupRevision = group?.optInt("revision", 0) ?: 0
     val isManager = groupRole == "owner" || groupRole == "admin"
+    val serverValidationRequired = groupSettings?.optFlag("validate_criteria", true) ?: true
     val base = if (groupId.isNullOrBlank()) "" else "/universe/groups/" + groupId
 
     val saveFileLauncher = rememberLauncherForActivityResult(
@@ -325,12 +335,70 @@ fun UniverseScreen(
         newProjectTitle = ""
     }
 
+    fun validateUniverseCriteria() {
+        val title = newTaskTitle.trim()
+        val criteria = newTaskCriteria.trim()
+        if (groupId == null || title.isBlank() || criteria.isBlank()) {
+            error = "Enter the task title and proof criteria before validation."
+            return
+        }
+        scope.launch {
+            loading = true
+            error = null
+            criteriaValidation = null
+            try {
+                val metadataResult = TaskitatorWorkerApi.getAiKeysMetadataDetails(authToken)
+                if (metadataResult.isFailure) {
+                    throw metadataResult.exceptionOrNull() ?: IllegalStateException("Unable to read AI provider settings.")
+                }
+                val metadata = metadataResult.getOrThrow()
+                val body = operationBody()
+                    .put("title", title)
+                    .put("description", "")
+                    .put("criteria", criteria)
+                if (!metadata.optBoolean("hosted", false)) {
+                    val provider = metadata.optString("selected_provider", "gemini")
+                    val providerMeta = metadata.optJSONObject("providers")?.optJSONObject(provider)
+                    if (providerMeta == null || !providerMeta.optBoolean("saved", false)) {
+                        throw IllegalStateException("No saved key is available for the selected AI provider.")
+                    }
+                    val models = providerMeta.optJSONArray("models")
+                    val model = models?.optString(0).orEmpty()
+                    val version = providerMeta.optString("version")
+                    if (model.isBlank() || version.isBlank()) {
+                        throw IllegalStateException("The selected AI provider configuration is incomplete. Refresh AI settings.")
+                    }
+                    body.put("provider", provider)
+                    body.put("model", model)
+                    body.put("key_version", version)
+                }
+                val result = call(base + "/validate", "POST", body)
+                if (result != null) {
+                    criteriaValidation = result
+                    if (result.optBoolean("passed", result.optInt("score", 0) >= 7)) {
+                        onStatus("Universe criteria passed validation at " + result.optInt("score") + "/10.")
+                    } else {
+                        error = result.optString("critique", "Criteria did not reach the required 7/10 score.")
+                    }
+                }
+            } catch (e: Exception) {
+                error = e.message ?: "Criteria validation failed."
+            } finally {
+                loading = false
+            }
+        }
+    }
+
     fun createTask() {
         val title = newTaskTitle.trim()
         val criteria = newTaskCriteria.trim()
         val projectId = selectedProjectId.ifBlank { projects.firstOrNull()?.optString("id").orEmpty() }
         if (title.isBlank() || criteria.isBlank() || projectId.isBlank() || groupId == null) {
             error = "Choose a project and provide a title and verifiable criteria."
+            return
+        }
+        if (newTaskAiRequired && serverValidationRequired && criteriaValidation?.optBoolean("passed", false) != true) {
+            error = "Validate the current title and criteria at 7/10 or higher before creating this AI-reviewed task."
             return
         }
         val memberIds = members.map { it.optString("account_id") }.filter { it.isNotBlank() }
@@ -342,10 +410,12 @@ fun UniverseScreen(
             put("criteria", criteria)
             put("mode", newTaskMode)
             put("members", JSONArray(memberIds))
-            put("reviewer_roles", JSONArray(listOf("owner", "admin", "reviewer")))
+            put("reviewers", JSONArray(members.filter { it.optString("role") == "reviewer" }.map { it.optString("account_id") }))
+            put("audit_mode", if (newTaskAiRequired) "both" else "human")
             put("allow_late", false)
-            put("ai_required", newTaskAiRequired)
-            put("human_required", newTaskAiRequired)
+            if (newTaskAiRequired && serverValidationRequired) {
+                put("validation_id", criteriaValidation?.optString("id").orEmpty())
+            }
             dueAtMillis?.let { put("due_at", it) }
         }
         postGroupAction(base + "/work/tasks", body, "Universe task created.")
@@ -354,6 +424,7 @@ fun UniverseScreen(
         newTaskCriteria = ""
         newTaskMode = "everyone"
         newTaskAiRequired = false
+        criteriaValidation = null
         dueAtMillis = null
     }
 
@@ -765,7 +836,7 @@ fun UniverseScreen(
 
                     "Controls" -> {
                         Text("Workspace controls", color = TextPrimary, fontWeight = FontWeight.Bold)
-                        val validateCriteria = groupSettings?.optBoolean("validate_criteria", false) ?: false
+                        val validateCriteria = groupSettings?.optFlag("validate_criteria", true) ?: true
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -898,8 +969,8 @@ fun UniverseScreen(
             title = { Text("New Universe task") },
             text = {
                 Column(Modifier.heightIn(max = 430.dp).verticalScroll(rememberScrollState())) {
-                    OutlinedTextField(value = newTaskTitle, onValueChange = { newTaskTitle = it }, label = { Text("Task title") })
-                    OutlinedTextField(value = newTaskCriteria, onValueChange = { newTaskCriteria = it }, label = { Text("Verifiable proof criteria") }, minLines = 3)
+                    OutlinedTextField(value = newTaskTitle, onValueChange = { newTaskTitle = it; criteriaValidation = null }, label = { Text("Task title") })
+                    OutlinedTextField(value = newTaskCriteria, onValueChange = { newTaskCriteria = null; criteriaValidation = null }, label = { Text("Verifiable proof criteria") }, minLines = 3)
                     Text("Assignment mode", fontSize = 11.sp)
                     Row {
                         FilterChip(selected = newTaskMode == "everyone", onClick = { newTaskMode = "everyone" }, label = { Text("Everyone") })
@@ -942,8 +1013,28 @@ fun UniverseScreen(
                         )
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(checked = newTaskAiRequired, onCheckedChange = { newTaskAiRequired = it })
+                        Checkbox(checked = newTaskAiRequired, onCheckedChange = {
+                            newTaskAiRequired = it
+                            criteriaValidation = null
+                        })
                         Text("Require AI evidence review", fontSize = 12.sp)
+                    }
+                    if (newTaskAiRequired && serverValidationRequired) {
+                        OutlinedButton(
+                            onClick = { validateUniverseCriteria() },
+                            enabled = !loading && newTaskTitle.isNotBlank() && newTaskCriteria.isNotBlank(),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(if (loading) "Validating…" else "Validate criteria")
+                        }
+                        criteriaValidation?.let { validation ->
+                            Text(
+                                "Score: " + validation.optInt("score") + "/10 · " +
+                                    validation.optString("critique", ""),
+                                color = if (validation.optBoolean("passed", false)) SuccessGreen else WarningAmber,
+                                fontSize = 11.sp
+                            )
+                        }
                     }
                     Text("All active Universe members are assigned. Review permissions are enforced by the Worker.", color = TextMuted, fontSize = 10.sp)
                 }
