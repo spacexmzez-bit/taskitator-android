@@ -28,6 +28,7 @@ import com.example.ui.theme.*
 fun CopilotDrawer(
     copilotName: String,
     messages: List<CopilotMessage>,
+    isLoading: Boolean = false,
     onSendMessage: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -175,6 +176,17 @@ fun CopilotDrawer(
                     }
                 }
 
+                if (isLoading) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = CyanAccent, strokeWidth = 2.dp)
+                        Text("Copilot is thinking...", color = TextSecondary, fontSize = 11.sp)
+                    }
+                }
+
                 Spacer(modifier = Modifier.height(10.dp))
 
                 // Message Input Row
@@ -199,6 +211,7 @@ fun CopilotDrawer(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     IconButton(
+                        enabled = !isLoading,
                         onClick = {
                             if (inputText.isNotBlank()) {
                                 onSendMessage(inputText.trim())
