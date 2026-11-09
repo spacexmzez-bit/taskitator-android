@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.app.DatePickerDialog
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Base64
@@ -33,11 +34,18 @@ import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
 import java.security.SecureRandom
+import java.util.Calendar
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 private data class UniverseUploadFile(val name: String, val mime: String, val bytes: ByteArray, val hash: String)
 
 private fun JSONArray.toObjectList(): List<JSONObject> =
     (0 until length()).mapNotNull { optJSONObject(it) }
+
+private fun JSONArray.containsString(value: String): Boolean =
+    (0 until length()).any { optString(it) == value }
 
 private fun operationBody(): JSONObject =
     JSONObject().put("operation_id", TaskitatorWorkerApi.newOperationId())
@@ -78,6 +86,7 @@ fun UniverseScreen(
     var newTaskCriteria by remember { mutableStateOf("") }
     var newTaskMode by remember { mutableStateOf("everyone") }
     var newTaskAiRequired by remember { mutableStateOf(false) }
+    var dueAtMillis by remember { mutableStateOf<Long?>(null) }
     var selectedProjectId by remember { mutableStateOf("") }
     var showInvite by remember { mutableStateOf(false) }
     var inviteRole by remember { mutableStateOf("member") }
@@ -247,7 +256,7 @@ fun UniverseScreen(
     fun createProject() {
         val title = newProjectTitle.trim()
         if (title.isBlank() || groupId == null) { error = "Enter a project name."; return }
-        postGroupAction(base + "/work/projects", operationBody().put("revision", groupRevision).put("title", title), "Project created.")
+        postGroupAction(base + "/work/projects", operationBody().put("title", title), "Project created.")
         showCreateProject = false
         newProjectTitle = ""
     }
@@ -273,6 +282,7 @@ fun UniverseScreen(
             put("allow_late", false)
             put("ai_required", newTaskAiRequired)
             put("human_required", newTaskAiRequired)
+            dueAtMillis?.let { put("due_at", it) }
         }
         postGroupAction(base + "/work/tasks", body, "Universe task created.")
         showCreateTask = false
@@ -280,6 +290,7 @@ fun UniverseScreen(
         newTaskCriteria = ""
         newTaskMode = "everyone"
         newTaskAiRequired = false
+        dueAtMillis = null
     }
 
     fun createInvitation() {
@@ -397,7 +408,7 @@ fun UniverseScreen(
             val result = call(
                 base + "/ai/" + reviewId + "/approve",
                 "POST",
-                operationBody().put("accept_max_credits", true)
+                operationBody().put("accept_max_credits", quote.optDouble("max_credits", 0.0))
             )
             if (result != null) {
                 aiResultMessage = result.optJSONObject("result")?.optString("verdict")
@@ -584,7 +595,7 @@ fun UniverseScreen(
                                                 TextButton(onClick = { openAssignment(assignment, task) }) { Text(if (state == "pending") "Review" else "Open") }
                                                 if (state in listOf("open", "rejected") &&
                                                     (assignment.optString("account_id") == currentUserId || assignment.isNull("account_id")) &&
-                                                    (task.optString("mode") != "shared" || task.optJSONArray("members")?.toObjectList()?.any { it.optString("id") == currentUserId } != false)
+                                                    (task.optString("mode") != "shared" || task.optJSONArray("members")?.containsString(currentUserId) == true)
                                                 ) {
                                                     TextButton(onClick = {
                                                         selectedAssignment = assignment
@@ -831,6 +842,41 @@ fun UniverseScreen(
                         Spacer(Modifier.width(6.dp))
                         FilterChip(selected = newTaskMode == "shared", onClick = { newTaskMode = "shared" }, label = { Text("Shared") })
                     }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                val initial = Calendar.getInstance()
+                                DatePickerDialog(
+                                    context,
+                                    { _, year, month, day ->
+                                        val due = Calendar.getInstance().apply {
+                                            set(year, month, day, 23, 59, 0)
+                                            set(Calendar.MILLISECOND, 0)
+                                        }
+                                        dueAtMillis = due.timeInMillis
+                                    },
+                                    initial.get(Calendar.YEAR),
+                                    initial.get(Calendar.MONTH),
+                                    initial.get(Calendar.DAY_OF_MONTH)
+                                ).apply { datePicker.minDate = System.currentTimeMillis() }.show()
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) { Text(if (dueAtMillis == null) "Set due date" else "Change due date") }
+                        if (dueAtMillis != null) {
+                            TextButton(onClick = { dueAtMillis = null }) { Text("Clear") }
+                        }
+                    }
+                    if (dueAtMillis != null) {
+                        Text(
+                            "Due: " + SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(dueAtMillis!!)) + " (end of day)",
+                            color = CyanAccent,
+                            fontSize = 11.sp
+                        )
+                    }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(checked = newTaskAiRequired, onCheckedChange = { newTaskAiRequired = it })
                         Text("Require AI evidence review", fontSize = 12.sp)
@@ -925,7 +971,7 @@ fun UniverseScreen(
             },
             confirmButton = {
                 Row {
-                    if (selectedTask?.optBoolean("ai_required") == true && isSubmitter && latest != null && latest.optString("decision").isBlank()) {
+                    if (selectedTask?.optBoolean("ai_required") == true && isSubmitter && latest != null && selectedAssignment?.optString("state") == "pending" && (latest.isNull("decision") || latest.optString("decision").isBlank())) {
                         TextButton(onClick = {
                             startUniverseAiReview(selectedAssignment!!, selectedTask!!)
                             showAssignmentDetail = false
@@ -951,8 +997,8 @@ fun UniverseScreen(
         AlertDialog(
             onDismissRequest = { showReview = false },
             title = { Text(if (reviewDecision == "approved") "Approve submission" else "Reject submission") },
-            text = { OutlinedTextField(value = reviewReason, onValueChange = { reviewReason = it }, label = { Text("Reason / feedback") }, minLines = 2) },
-            confirmButton = { TextButton(onClick = { reviewAssignment() }, enabled = !loading) { Text("Confirm") } },
+            text = { Column { OutlinedTextField(value = reviewReason, onValueChange = { reviewReason = it }, label = { Text("Reason / feedback") }, minLines = 2); Text("A review reason is required by the server.", color = TextMuted, fontSize = 10.sp) } },
+            confirmButton = { TextButton(onClick = { reviewAssignment() }, enabled = !loading && reviewReason.isNotBlank()) { Text("Confirm") } },
             dismissButton = { TextButton(onClick = { showReview = false }) { Text("Cancel") } }
         )
     }
