@@ -31,6 +31,8 @@ fun BatchActionBar(
     onOpenTags: () -> Unit,
     onOpenPriority: () -> Unit,
     onOpenReschedule: () -> Unit,
+    canBatchAudit: Boolean = false,
+    onBatchAudit: () -> Unit,
     onBatchComplete: () -> Unit,
     onBatchTrash: () -> Unit,
     onCancel: () -> Unit,
@@ -100,6 +102,16 @@ fun BatchActionBar(
                     border = androidx.compose.foundation.BorderStroke(1.dp, DarkBorder)
                 ) {
                     Text("📅 Date", fontSize = 11.sp)
+                }
+
+                OutlinedButton(
+                    onClick = onBatchAudit,
+                    enabled = canBatchAudit,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = CyanAccent),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, if (canBatchAudit) CyanAccent else DarkBorder)
+                ) {
+                    Text("AI Review", fontSize = 11.sp)
                 }
 
                 IconButton(
