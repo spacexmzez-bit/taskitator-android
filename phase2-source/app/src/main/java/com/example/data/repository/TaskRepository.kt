@@ -1157,6 +1157,57 @@ class TaskRepository(private val context: Context) {
         }
     }
 
+    /**
+     * Refresh after a server-side action (for example, a confirmed AI audit).
+     * Pull the authoritative snapshot first, then three-way merge any unrelated
+     * local edits before pushing them. Never push a stale pre-audit snapshot.
+     */
+    suspend fun syncAfterServerMutation(): Pair<Boolean, String> {
+        val token = _settings.value.authToken
+        if (token.isBlank()) return Pair(false, "Not signed in. Token required to sync.")
+        if (isSyncInProgress) return Pair(false, "Sync is already in progress.")
+        if (_settings.value.needsInitialPull) return initialPull()
+        if (!authPrefs.getBoolean("dirty_" + getSafeUserId(), false)) return initialPull()
+
+        _syncState.value = SyncState.PULLING
+        _syncStatusMessage.value = "Refreshing server-approved changes..."
+        val pullResult = TaskitatorWorkerApi.pullSync(token, _settings.value.username)
+        if (pullResult.isFailure) {
+            val message = pullResult.exceptionOrNull()?.message ?: "Unable to pull the server snapshot."
+            _syncState.value = SyncState.ERROR
+            _syncStatusMessage.value = "Server refresh failed: " + message
+            return Pair(false, "Server refresh failed: " + message)
+        }
+
+        val remoteSnapshot = pullResult.getOrThrow()
+        val remoteBase = JSONObject(remoteSnapshot.toString())
+        val (cleanMerge, report) = performThreeWayMerge(
+            baseObj = baseSnapshot,
+            localObj = rawSnapshot,
+            remoteObj = remoteSnapshot
+        )
+        if (!cleanMerge) {
+            _syncConflictReport.value = report
+            _syncState.value = SyncState.CONFLICT
+            val message = "Server changes were received, but local edits conflict. Resolve the sync conflict before continuing."
+            _syncStatusMessage.value = message
+            return Pair(false, message)
+        }
+
+        rawSnapshot = remoteSnapshot
+        baseSnapshot = remoteBase
+        baseVersion = remoteBase.optLong("version", baseVersion)
+        getBaseSnapshotFile().writeText(baseSnapshot.toString(2))
+        parseSnapshot(rawSnapshot)
+        pendingMutationId = null
+        pendingPushPayload = null
+        saveLocalSnapshot(localChange = true)
+
+        // The local edits were rebased onto the server's new version. Push that
+        // merged snapshot with a fresh mutation ID, then pull the final state.
+        return performSync()
+    }
+
     suspend fun performSync(): Pair<Boolean, String> {
         val token = _settings.value.authToken
         if (token.isBlank()) {
