@@ -95,6 +95,14 @@ fun UniverseScreen(
     var showCreateTask by remember { mutableStateOf(false) }
     var newTaskTitle by remember { mutableStateOf("") }
     var newTaskCriteria by remember { mutableStateOf("") }
+    var newTaskDescription by remember { mutableStateOf("") }
+    var newTaskShield by remember { mutableStateOf(false) }
+    var newTaskBonus by remember { mutableStateOf(false) }
+    var newTaskAllowLate by remember { mutableStateOf(false) }
+    var editingTask by remember { mutableStateOf<JSONObject?>(null) }
+    var newTaskParent by remember { mutableStateOf<JSONObject?>(null) }
+    var pendingTaskAction by remember { mutableStateOf<Pair<JSONObject, String>?>(null) }
+    var pendingWorkspaceAction by remember { mutableStateOf<String?>(null) }
     var newTaskMode by remember { mutableStateOf("everyone") }
     var newTaskAuditMode by remember { mutableStateOf("none") }
     var criteriaValidation by remember { mutableStateOf<JSONObject?>(null) }
@@ -395,6 +403,25 @@ fun UniverseScreen(
         newProjectTitle = ""
     }
 
+    fun beginTaskEditor(task: JSONObject? = null, parent: JSONObject? = null) {
+        editingTask = task
+        newTaskParent = if (task == null) parent else null
+        newTaskTitle = task?.optString("title").orEmpty()
+        newTaskDescription = task?.optString("description").orEmpty()
+        newTaskCriteria = task?.optString("criteria").orEmpty()
+        newTaskMode = task?.optString("mode", "everyone") ?: "everyone"
+        newTaskAuditMode = task?.optString("audit_mode", "none") ?: "none"
+        newTaskShield = task?.optFlag("shield", false) ?: false
+        newTaskBonus = task?.optFlag("bonus", false) ?: false
+        newTaskAllowLate = task?.optFlag("allow_late", false) ?: false
+        dueAtMillis = task?.optLong("due_at", 0L)?.takeIf { it > 0L }
+        selectedProjectId = task?.optString("project_id")
+            ?: parent?.optString("project_id")
+            ?: projects.firstOrNull()?.optString("id").orEmpty()
+        criteriaValidation = null
+        showCreateTask = true
+    }
+
     fun validateUniverseCriteria() {
         val title = newTaskTitle.trim()
         val criteria = newTaskCriteria.trim()
@@ -414,7 +441,7 @@ fun UniverseScreen(
                 val metadata = metadataResult.getOrThrow()
                 val body = operationBody()
                     .put("title", title)
-                    .put("description", "")
+                    .put("description", newTaskDescription.trim())
                     .put("criteria", criteria)
                 if (!metadata.optBoolean("hosted", false)) {
                     val provider = metadata.optString("selected_provider", "gemini")
@@ -450,43 +477,78 @@ fun UniverseScreen(
     }
 
     fun createTask() {
+        val original = editingTask
         val title = newTaskTitle.trim()
+        val description = newTaskDescription.trim()
         val criteria = newTaskCriteria.trim()
         val projectId = selectedProjectId.ifBlank { projects.firstOrNull()?.optString("id").orEmpty() }
         val requiresAiCriteria = newTaskAuditMode in setOf("ai", "either", "both")
-        if (title.isBlank() || projectId.isBlank() || groupId == null || requiresAiCriteria && criteria.isBlank()) {
-            error = if (requiresAiCriteria) "Choose a project and provide a title and AI review criteria." else "Choose a project and provide a task title."
+        if (title.isBlank() || projectId.isBlank() || groupId == null ||
+            (requiresAiCriteria && criteria.isBlank())) {
+            error = if (requiresAiCriteria) "Provide a title and AI review criteria."
+                else "Choose a project and provide a task title."
             return
         }
-        if (requiresAiCriteria && serverValidationRequired && criteriaValidation?.optBoolean("passed", false) != true) {
-            error = "Validate the current title and criteria at 7/10 or higher before creating this AI-reviewed task."
+        val evidenceChanged = original == null ||
+            original.optString("title") != title ||
+            original.optString("description") != description ||
+            original.optString("criteria") != criteria ||
+            original.optString("audit_mode", "none") != newTaskAuditMode
+        if (requiresAiCriteria && evidenceChanged && serverValidationRequired &&
+            criteriaValidation?.optBoolean("passed", false) != true) {
+            error = "Validate the current title, description and criteria at 7/10 or higher before saving."
             return
         }
-        val memberIds = members.map { it.optString("account_id") }.filter { it.isNotBlank() }
-        if (memberIds.isEmpty()) { error = "The Universe has no active members."; return }
         val body = operationBody().apply {
-            put("revision", groupRevision)
-            put("project_id", projectId)
             put("title", title)
-            put("criteria", criteria)
-            put("mode", newTaskMode)
-            put("members", JSONArray(memberIds))
-            put("reviewers", JSONArray(members.filter { it.optString("role") == "reviewer" }.map { it.optString("account_id") }))
-            put("audit_mode", newTaskAuditMode)
-            put("allow_late", false)
-            if (newTaskAuditMode in setOf("ai", "either", "both") && serverValidationRequired) {
+            put("description", description)
+            put("due_at", dueAtMillis ?: JSONObject.NULL)
+            put("allow_late", newTaskAllowLate)
+            if (original == null) {
+                val memberIds = members.map { it.optString("account_id") }.filter { it.isNotBlank() }
+                if (memberIds.isEmpty()) {
+                    error = "The Universe has no active members."
+                    return
+                }
+                put("project_id", projectId)
+                newTaskParent?.optString("id")?.takeIf { it.isNotBlank() }?.let { put("parent_id", it) }
+                put("criteria", criteria)
+                put("mode", newTaskMode)
+                put("members", JSONArray(memberIds))
+                put("reviewers", JSONArray(members.filter { it.optString("role") == "reviewer" }
+                    .map { it.optString("account_id") }))
+                put("audit_mode", newTaskAuditMode)
+                put("shield", newTaskShield)
+                put("bonus", newTaskBonus)
+            } else {
+                put("revision", original.optInt("revision", 1))
+                if (groupRole == "owner") {
+                    put("criteria", criteria)
+                    put("audit_mode", newTaskAuditMode)
+                    put("shield", newTaskShield)
+                    put("bonus", newTaskBonus)
+                }
+            }
+            if (requiresAiCriteria && evidenceChanged && serverValidationRequired) {
                 put("validation_id", criteriaValidation?.optString("id").orEmpty())
             }
-            dueAtMillis?.let { put("due_at", it) }
         }
-        postGroupAction(base + "/work/tasks", body, "Universe task created.")
-        showCreateTask = false
-        newTaskTitle = ""
-        newTaskCriteria = ""
-        newTaskMode = "everyone"
-        newTaskAuditMode = "none"
-        criteriaValidation = null
-        dueAtMillis = null
+        val path = if (original == null) base + "/work/tasks"
+            else base + "/work/tasks/" + original.optString("id") + "/edit"
+        scope.launch {
+            loading = true
+            error = null
+            val result = call(path, "POST", body)
+            if (result != null) {
+                showCreateTask = false
+                editingTask = null
+                newTaskParent = null
+                criteriaValidation = null
+                onStatus(if (original == null) "Universe task created." else "Universe task updated.")
+                refreshGroup(groupId!!)
+            }
+            loading = false
+        }
     }
 
     fun createInvitation() {
