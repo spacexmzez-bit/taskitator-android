@@ -15,7 +15,7 @@ Phase 2 builds on the Phase 1 native app and adds Worker-backed AI, Pro, phone-d
 - Replaced the proof-audit mock path with real evidence selection, upload, hosted quote acceptance, personal-key review, batch review, and server-side confirmation. The app enforces 8 MiB per photo, 30 MiB per PDF, 5 files, and 40 MiB combined.
 - Connected Copilot to the authenticated AI gateway with a current task snapshot. Copilot is explicitly prevented from claiming it performed protected actions.
 - Added a native Universe workspace with group creation/joining, membership and roles, invitations, projects, task assignment, all five audit modes, server criteria validation, due dates, proof/reference uploads and downloads, discussions, activity, AI review, lock consent, assignment eligibility, and shorter-notice acceptance.
-- Added native project editing, member/reviewer selection and empty-project deletion; task editing, subtasks, assignee/reviewer selection, all/count/specific completion requirements, shield/bonus controls, optional late submission, and confirmed close/delete.
+- Added native project editing, member/reviewer selection, archive/color options and empty-project deletion; task editing, subtasks, assignee/reviewer selection, all/count/specific completion requirements, shield/bonus controls, opening/due/late-cutoff dates, optional late submission, and confirmed close/delete.
 - Added a native tag/priority catalog editor and task label selection, discussion message editing/moderation, submission disputes and reopening.
 - Added a Worker-authoritative task-only JSON export for Universe owners. This excludes attachments and submission history and is **not** a full backup.
 - Added confirmation before deleting or leaving a Universe, and retained existing screen data when individual refresh requests fail.
@@ -34,7 +34,7 @@ Successful runs publish the `taskitator-phase2-build` artifact containing the AP
 
 ## Known gaps — this is not yet full website parity
 
-- Advanced Universe date policies (opening dates and late cutoffs), task hierarchy reordering, and some project-specific settings are not yet exposed natively.
+- Universe task hierarchy reordering and certain advanced administrative controls are not yet exposed natively.
 - Full Universe backup (including attachments/history), import/overwrite, ownership transfer, and some administrative lifecycle controls still require the website. Android currently exports task-only JSON manifests.
 - AI key creation/replacement and account verification still use the website's verified flow; the app does not collect or store raw provider keys.
 - Native Clerk sign-in and recovery are not implemented in this phase; the app continues to use its existing authenticated-token flow.
