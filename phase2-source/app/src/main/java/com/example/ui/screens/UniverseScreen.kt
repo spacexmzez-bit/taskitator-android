@@ -46,6 +46,9 @@ private data class UniversePendingDownload(val name: String, val mime: String, v
 private fun JSONArray.toObjectList(): List<JSONObject> =
     (0 until length()).mapNotNull { optJSONObject(it) }
 
+private fun JSONArray.toStringSet(): Set<String> =
+    (0 until length()).mapNotNull { optString(it).takeIf(String::isNotBlank) }.toSet()
+
 private fun JSONArray.containsString(value: String): Boolean =
     (0 until length()).any { optString(it) == value }
 
@@ -92,6 +95,11 @@ fun UniverseScreen(
     var showCreateGroup by remember { mutableStateOf(false) }
     var showCreateProject by remember { mutableStateOf(false) }
     var newProjectTitle by remember { mutableStateOf("") }
+    var newProjectDescription by remember { mutableStateOf("") }
+    var editingProject by remember { mutableStateOf<JSONObject?>(null) }
+    var projectMemberIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var projectReviewerIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var pendingProjectDelete by remember { mutableStateOf<JSONObject?>(null) }
     var showCreateTask by remember { mutableStateOf(false) }
     var newTaskTitle by remember { mutableStateOf("") }
     var newTaskCriteria by remember { mutableStateOf("") }
@@ -423,16 +431,40 @@ fun UniverseScreen(
         }
     }
 
+    fun beginProjectEditor(project: JSONObject? = null) {
+        editingProject = project
+        newProjectTitle = project?.optString("title").orEmpty()
+        newProjectDescription = project?.optString("description").orEmpty()
+        projectMemberIds = project?.optJSONArray("members")?.toStringSet()
+            ?: members.map { it.optString("account_id") }.filter { it.isNotBlank() }.toSet()
+        projectReviewerIds = project?.optJSONArray("reviewers")?.toStringSet()
+            ?: members.filter { it.optString("role") in setOf("owner", "admin", "reviewer") }
+                .map { it.optString("account_id") }.filter { it.isNotBlank() }.toSet()
+        showCreateProject = true
+    }
+
     fun createProject() {
+        val original = editingProject
         val title = newProjectTitle.trim()
         if (title.isBlank() || groupId == null) { error = "Enter a project name."; return }
+        val body = operationBody().apply {
+            put("title", title)
+            put("description", newProjectDescription.trim())
+            put("members", JSONArray(projectMemberIds.toList()))
+            put("reviewers", JSONArray(projectReviewerIds.toList()))
+            if (original != null) put("revision", groupRevision)
+        }
+        val path = if (original == null) base + "/work/projects"
+            else base + "/work/projects/" + original.optString("id") + "/edit"
         scope.launch {
             loading = true
             error = null
-            if (call(base + "/work/projects", "POST", operationBody().put("title", title)) != null) {
+            if (call(path, "POST", body) != null) {
                 showCreateProject = false
+                editingProject = null
                 newProjectTitle = ""
-                onStatus("Project created.")
+                newProjectDescription = ""
+                onStatus(if (original == null) "Project created." else "Project updated.")
                 refreshGroup(groupId!!)
             }
             loading = false
@@ -954,12 +986,28 @@ fun UniverseScreen(
                         ) {
                             Text("Projects & tasks", color = TextPrimary, fontWeight = FontWeight.Bold)
                             Row {
-                                TextButton(onClick = { showCreateProject = true }, enabled = isManager) { Text("+ Project") }
+                                TextButton(onClick = { beginProjectEditor() }, enabled = isManager) { Text("+ Project") }
                                 TextButton(onClick = { beginTaskEditor() }, enabled = isManager && projects.isNotEmpty()) { Text("+ Task") }
                             }
                         }
                         projects.forEach { project ->
-                            Text("📁 " + project.optString("title"), color = CyanAccent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text("📁 " + project.optString("title"), color = CyanAccent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                                if (isManager) {
+                                    TextButton(onClick = { beginProjectEditor(project) }, enabled = !loading) { Text("Edit") }
+                                    TextButton(
+                                        onClick = { pendingProjectDelete = project },
+                                        enabled = !loading && tasks.none { it.optString("project_id") == project.optString("id") }
+                                    ) { Text("Delete", color = PriorityP1) }
+                                }
+                            }
+                            if (project.optString("description").isNotBlank()) {
+                                Text(project.optString("description"), color = TextSecondary, fontSize = 10.sp)
+                            }
                             tasks.filter { it.optString("project_id") == project.optString("id") }.forEach { task ->
                                 Card(
                                     colors = CardDefaults.cardColors(containerColor = DarkSurface),
@@ -1293,10 +1341,41 @@ fun UniverseScreen(
     if (showCreateProject) {
         AlertDialog(
             onDismissRequest = { showCreateProject = false },
-            title = { Text("New project") },
-            text = { OutlinedTextField(value = newProjectTitle, onValueChange = { newProjectTitle = it }, label = { Text("Project title") }) },
-            confirmButton = { TextButton(onClick = { createProject() }, enabled = !loading) { Text("Create") } },
-            dismissButton = { TextButton(onClick = { showCreateProject = false }) { Text("Cancel") } }
+            title = { Text(if (editingProject == null) "New project" else "Edit project") },
+            text = {
+                Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState())) {
+                    OutlinedTextField(value = newProjectTitle, onValueChange = { newProjectTitle = it }, label = { Text("Project title") })
+                    OutlinedTextField(value = newProjectDescription, onValueChange = { newProjectDescription = it }, label = { Text("Description") }, minLines = 2)
+                    Text("Project members", color = CyanAccent, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    members.forEach { member ->
+                        val id = member.optString("account_id")
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(
+                                checked = id in projectMemberIds,
+                                onCheckedChange = { checked ->
+                                    projectMemberIds = if (checked) projectMemberIds + id else projectMemberIds - id
+                                }
+                            )
+                            Text(member.optString("username", id.take(22)), color = TextPrimary, fontSize = 11.sp)
+                        }
+                    }
+                    Text("Project reviewers", color = CyanAccent, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    members.filter { it.optString("role") in setOf("owner", "admin", "reviewer") }.forEach { member ->
+                        val id = member.optString("account_id")
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(
+                                checked = id in projectReviewerIds,
+                                onCheckedChange = { checked ->
+                                    projectReviewerIds = if (checked) projectReviewerIds + id else projectReviewerIds - id
+                                }
+                            )
+                            Text(member.optString("username", id.take(22)), color = TextPrimary, fontSize = 11.sp)
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { createProject() }, enabled = !loading && newProjectTitle.isNotBlank()) { Text(if (editingProject == null) "Create" else "Save") } },
+            dismissButton = { TextButton(onClick = { showCreateProject = false; editingProject = null }) { Text("Cancel") } }
         )
     }
 
@@ -1422,6 +1501,31 @@ fun UniverseScreen(
             },
             confirmButton = { TextButton(onClick = { createTask() }, enabled = !loading) { Text(if (editingTask == null) "Create task" else "Save changes") } },
             dismissButton = { TextButton(onClick = { showCreateTask = false; editingTask = null; newTaskParent = null }) { Text("Cancel") } }
+        )
+    }
+
+    pendingProjectDelete?.let { project ->
+        AlertDialog(
+            onDismissRequest = { pendingProjectDelete = null },
+            title = { Text("Delete empty project?") },
+            text = { Text("Only empty projects can be deleted. This removes the project and its settings; existing tasks are never deleted automatically.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    val id = project.optString("id")
+                    scope.launch {
+                        loading = true
+                        error = null
+                        if (call(base + "/work/projects/" + id + "/delete", "POST",
+                                operationBody().put("revision", groupRevision)) != null) {
+                            pendingProjectDelete = null
+                            onStatus("Project deleted.")
+                            groupId?.let { refreshGroup(it) }
+                        }
+                        loading = false
+                    }
+                }, enabled = !loading) { Text("Delete project", color = PriorityP1) }
+            },
+            dismissButton = { TextButton(onClick = { pendingProjectDelete = null }) { Text("Cancel") } }
         )
     }
 
