@@ -162,7 +162,7 @@ fun UniverseScreen(
             return
         }
         val result = call("/universe/groups")
-        groups = result?.optJSONArray("groups")?.toObjectList() ?: emptyList()
+        if (result != null) groups = result.optJSONArray("groups")?.toObjectList() ?: emptyList()
         loading = false
     }
 
@@ -172,22 +172,26 @@ fun UniverseScreen(
         error = null
         val base = "/universe/groups/" + id
         val groupResult = call(base)
-        group = groupResult?.optJSONObject("group")
+        if (groupResult != null) group = groupResult.optJSONObject("group")
         val memberResult = call(base + "/members")
-        members = memberResult?.optJSONArray("members")?.toObjectList() ?: emptyList()
+        if (memberResult != null) members = memberResult.optJSONArray("members")?.toObjectList() ?: emptyList()
         val workResult = call(base + "/work")
-        projects = workResult?.optJSONArray("projects")?.toObjectList() ?: emptyList()
-        tasks = workResult?.optJSONArray("tasks")?.toObjectList() ?: emptyList()
-        assignments = workResult?.optJSONArray("assignments")?.toObjectList() ?: emptyList()
+        if (workResult != null) {
+            projects = workResult.optJSONArray("projects")?.toObjectList() ?: emptyList()
+            tasks = workResult.optJSONArray("tasks")?.toObjectList() ?: emptyList()
+            assignments = workResult.optJSONArray("assignments")?.toObjectList() ?: emptyList()
+        }
         val discussionResult = call(base + "/discussion")
-        comments = discussionResult?.optJSONArray("comments")?.toObjectList() ?: emptyList()
+        if (discussionResult != null) comments = discussionResult.optJSONArray("comments")?.toObjectList() ?: emptyList()
         val activityResult = call(base + "/activity")
-        activity = activityResult?.optJSONArray("events")?.toObjectList() ?: emptyList()
-        groupSettings = call(base + "/settings")
+        if (activityResult != null) activity = activityResult.optJSONArray("events")?.toObjectList() ?: emptyList()
+        call(base + "/settings")?.let { groupSettings = it }
         val consentResult = call(base + "/consent")
-        lockConsent = consentResult?.optJSONObject("consent")
-        lockEpoch = consentResult?.optLong("epoch", 0L) ?: 0L
-        locks = call(base + "/locks")?.optJSONArray("assignments")?.toObjectList() ?: emptyList()
+        if (consentResult != null) {
+            lockConsent = consentResult.optJSONObject("consent")
+            lockEpoch = consentResult.optLong("epoch", 0L)
+        }
+        call(base + "/locks")?.let { locks = it.optJSONArray("assignments")?.toObjectList() ?: emptyList() }
         selectedProjectId = projects.firstOrNull()?.optString("id").orEmpty()
         loading = false
     }
@@ -363,6 +367,25 @@ fun UniverseScreen(
         }
     }
 
+    fun performWorkspaceAction(action: String) {
+        val id = selectedGroupId ?: return
+        val revision = groupRevision
+        scope.launch {
+            loading = true
+            error = null
+            val body = operationBody().put("revision", revision)
+            if (action == "delete") body.put("confirm", true)
+            if (call("/universe/groups/" + id + "/" + action, "POST", body) != null) {
+                pendingWorkspaceAction = null
+                selectedGroupId = null
+                group = null
+                onStatus(if (action == "delete") "Universe deleted." else "Left the Universe.")
+                refreshGroups()
+            }
+            loading = false
+        }
+    }
+
     fun createUniverse() {
         val title = createTitle.trim()
         if (title.isBlank()) { error = "Enter a Universe name."; return }
@@ -403,9 +426,17 @@ fun UniverseScreen(
     fun createProject() {
         val title = newProjectTitle.trim()
         if (title.isBlank() || groupId == null) { error = "Enter a project name."; return }
-        postGroupAction(base + "/work/projects", operationBody().put("title", title), "Project created.")
-        showCreateProject = false
-        newProjectTitle = ""
+        scope.launch {
+            loading = true
+            error = null
+            if (call(base + "/work/projects", "POST", operationBody().put("title", title)) != null) {
+                showCreateProject = false
+                newProjectTitle = ""
+                onStatus("Project created.")
+                refreshGroup(groupId!!)
+            }
+            loading = false
+        }
     }
 
     fun beginTaskEditor(task: JSONObject? = null, parent: JSONObject? = null) {
@@ -1224,18 +1255,13 @@ fun UniverseScreen(
                         Spacer(Modifier.height(12.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(
-                                onClick = {
-                                    postGroupAction(base + "/leave", operationBody().put("revision", groupRevision), "Left the Universe.")
-                                    selectedGroupId = null
-                                },
-                                enabled = groupRole != "owner"
+                                onClick = { pendingWorkspaceAction = "leave" },
+                                enabled = groupRole != "owner" && !loading
                             ) { Text("Leave") }
                             if (groupRole == "owner") {
                                 OutlinedButton(
-                                    onClick = {
-                                        postGroupAction(base + "/delete", operationBody().put("revision", groupRevision).put("confirm", true), "Universe deletion requested.")
-                                        selectedGroupId = null
-                                    }
+                                    onClick = { pendingWorkspaceAction = "delete" },
+                                    enabled = !loading
                                 ) { Text("Delete Universe", color = PriorityP1) }
                             }
                         }
@@ -1396,6 +1422,27 @@ fun UniverseScreen(
             },
             confirmButton = { TextButton(onClick = { createTask() }, enabled = !loading) { Text(if (editingTask == null) "Create task" else "Save changes") } },
             dismissButton = { TextButton(onClick = { showCreateTask = false; editingTask = null; newTaskParent = null }) { Text("Cancel") } }
+        )
+    }
+
+    pendingWorkspaceAction?.let { action ->
+        val isDelete = action == "delete"
+        AlertDialog(
+            onDismissRequest = { pendingWorkspaceAction = null },
+            title = { Text(if (isDelete) "Delete Universe?" else "Leave Universe?") },
+            text = {
+                Text(
+                    if (isDelete) "Deleting this Universe is irreversible. Members, assignments, evidence and workspace history may be permanently removed."
+                    else "You will lose access to this Universe and its shared tasks. You may need a new invitation to rejoin.",
+                    color = TextPrimary
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { performWorkspaceAction(action) }, enabled = !loading) {
+                    Text(if (isDelete) "Delete Universe" else "Leave Universe", color = if (isDelete) PriorityP1 else TextPrimary)
+                }
+            },
+            dismissButton = { TextButton(onClick = { pendingWorkspaceAction = null }) { Text("Cancel") } }
         )
     }
 
