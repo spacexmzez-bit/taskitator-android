@@ -570,9 +570,11 @@ fun UniverseScreen(
         newTaskShield = task?.optFlag("shield", false) ?: false
         newTaskBonus = task?.optFlag("bonus", false) ?: false
         newTaskAllowLate = task?.optFlag("allow_late", false) ?: false
-        val selectedProject = projects.firstOrNull {
-            it.optString("id") == (task?.optString("project_id") ?: parent?.optString("project_id"))
-        }
+        selectedProjectId = task?.optString("project_id")
+            ?: parent?.optString("project_id")
+            ?: selectedProjectId.takeIf { id -> projects.any { it.optString("id") == id } }
+            ?: projects.firstOrNull()?.optString("id").orEmpty()
+        val selectedProject = projects.firstOrNull { it.optString("id") == selectedProjectId }
         newTaskMemberIds = task?.optJSONArray("members")?.toStringSet()
             ?: selectedProject?.optJSONArray("members")?.toStringSet()?.takeIf { it.isNotEmpty() }
             ?: members.map { it.optString("account_id") }.filter { it.isNotBlank() }.toSet()
@@ -587,9 +589,6 @@ fun UniverseScreen(
         newTaskTagIds = task?.optJSONArray("tags")?.toStringSet() ?: emptySet()
         newTaskPriorityId = task?.optString("priority_id")?.takeIf { it.isNotBlank() && it != "null" }
         dueAtMillis = task?.optLong("due_at", 0L)?.takeIf { it > 0L }
-        selectedProjectId = task?.optString("project_id")
-            ?: parent?.optString("project_id")
-            ?: projects.firstOrNull()?.optString("id").orEmpty()
         criteriaValidation = null
         showCreateTask = true
     }
@@ -1543,7 +1542,13 @@ fun UniverseScreen(
                         projects.forEach { project ->
                             FilterChip(
                                 selected = selectedProjectId == project.optString("id"),
-                                onClick = { selectedProjectId = project.optString("id") },
+                                onClick = {
+                                    selectedProjectId = project.optString("id")
+                                    newTaskMemberIds = project.optJSONArray("members")?.toStringSet()?.takeIf { it.isNotEmpty() }
+                                        ?: members.map { it.optString("account_id") }.filter { it.isNotBlank() }.toSet()
+                                    newTaskReviewerIds = project.optJSONArray("reviewers")?.toStringSet()
+                                        ?: emptySet()
+                                },
                                 label = { Text(project.optString("title")) }
                             )
                         }
@@ -1842,7 +1847,7 @@ fun UniverseScreen(
                     if (isDelete) "Deleting " + task.optString("title") +
                         " also deletes its descendant tasks, cancels assignments and marks evidence for deletion. This cannot be undone."
                     else "Closing " + task.optString("title") +
-                        " ends its assignments and may remove phone-lock eligibility. Reopen is not supported by this action.",
+                        " prevents new submissions and removes phone-lock eligibility. Reopen is not supported by this action.",
                     color = TextPrimary
                 )
             },
