@@ -107,6 +107,11 @@ fun UniverseScreen(
     var newTaskShield by remember { mutableStateOf(false) }
     var newTaskBonus by remember { mutableStateOf(false) }
     var newTaskAllowLate by remember { mutableStateOf(false) }
+    var newTaskMemberIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var newTaskReviewerIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var newTaskRequirementType by remember { mutableStateOf("all") }
+    var newTaskRequirementCount by remember { mutableStateOf("1") }
+    var newTaskSpecificMemberIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var editingTask by remember { mutableStateOf<JSONObject?>(null) }
     var newTaskParent by remember { mutableStateOf<JSONObject?>(null) }
     var pendingTaskAction by remember { mutableStateOf<Pair<JSONObject, String>?>(null) }
@@ -482,6 +487,20 @@ fun UniverseScreen(
         newTaskShield = task?.optFlag("shield", false) ?: false
         newTaskBonus = task?.optFlag("bonus", false) ?: false
         newTaskAllowLate = task?.optFlag("allow_late", false) ?: false
+        val selectedProject = projects.firstOrNull {
+            it.optString("id") == (task?.optString("project_id") ?: parent?.optString("project_id"))
+        }
+        newTaskMemberIds = task?.optJSONArray("members")?.toStringSet()
+            ?: selectedProject?.optJSONArray("members")?.toStringSet()?.takeIf { it.isNotEmpty() }
+            ?: members.map { it.optString("account_id") }.filter { it.isNotBlank() }.toSet()
+        newTaskReviewerIds = task?.optJSONArray("reviewers")?.toStringSet()
+            ?: selectedProject?.optJSONArray("reviewers")?.toStringSet()
+            ?: members.filter { it.optString("role") in setOf("owner", "admin", "reviewer") }
+                .map { it.optString("account_id") }.filter { it.isNotBlank() }.toSet()
+        val requirement = task?.optJSONObject("requirement")
+        newTaskRequirementType = requirement?.optString("type", "all") ?: "all"
+        newTaskRequirementCount = requirement?.optInt("count", 1)?.toString() ?: "1"
+        newTaskSpecificMemberIds = requirement?.optJSONArray("members")?.toStringSet() ?: emptySet()
         dueAtMillis = task?.optLong("due_at", 0L)?.takeIf { it > 0L }
         selectedProjectId = task?.optString("project_id")
             ?: parent?.optString("project_id")
@@ -551,6 +570,17 @@ fun UniverseScreen(
         val criteria = newTaskCriteria.trim()
         val projectId = selectedProjectId.ifBlank { projects.firstOrNull()?.optString("id").orEmpty() }
         val requiresAiCriteria = newTaskAuditMode in setOf("ai", "either", "both")
+        if (newTaskMemberIds.isEmpty()) { error = "Select at least one task assignee."; return }
+        if (newTaskRequirementType == "count" &&
+            (newTaskRequirementCount.toIntOrNull() ?: 0) !in 1..newTaskMemberIds.size) {
+            error = "Completion count must be between 1 and the number of assignees."
+            return
+        }
+        if (newTaskRequirementType == "specific" &&
+            (newTaskSpecificMemberIds.isEmpty() || !newTaskMemberIds.containsAll(newTaskSpecificMemberIds))) {
+            error = "Select at least one required assignee from the task members."
+            return
+        }
         if (title.isBlank() || projectId.isBlank() || groupId == null ||
             (requiresAiCriteria && criteria.isBlank())) {
             error = if (requiresAiCriteria) "Provide a title and AI review criteria."
@@ -572,19 +602,18 @@ fun UniverseScreen(
             put("description", description)
             put("due_at", dueAtMillis ?: JSONObject.NULL)
             put("allow_late", newTaskAllowLate)
+            put("members", JSONArray(newTaskMemberIds.toList()))
+            put("reviewers", JSONArray(newTaskReviewerIds.toList()))
+            put("requirement", JSONObject().apply {
+                put("type", newTaskRequirementType)
+                if (newTaskRequirementType == "count") put("count", newTaskRequirementCount.toInt())
+                if (newTaskRequirementType == "specific") put("members", JSONArray(newTaskSpecificMemberIds.toList()))
+            })
             if (original == null) {
-                val memberIds = members.map { it.optString("account_id") }.filter { it.isNotBlank() }
-                if (memberIds.isEmpty()) {
-                    error = "The Universe has no active members."
-                    return
-                }
                 put("project_id", projectId)
                 newTaskParent?.optString("id")?.takeIf { it.isNotBlank() }?.let { put("parent_id", it) }
                 put("criteria", criteria)
                 put("mode", newTaskMode)
-                put("members", JSONArray(memberIds))
-                put("reviewers", JSONArray(members.filter { it.optString("role") == "reviewer" }
-                    .map { it.optString("account_id") }))
                 put("audit_mode", newTaskAuditMode)
                 put("shield", newTaskShield)
                 put("bonus", newTaskBonus)
@@ -1492,11 +1521,68 @@ fun UniverseScreen(
                             Text("Bonus: optional for parent completion", color = TextPrimary, fontSize = 11.sp)
                         }
                     }
-                    if (editingTask == null) {
-                        Text("All current Universe members are assigned. Custom assignees and reviewers remain available on the website.", color = TextMuted, fontSize = 10.sp)
-                    } else {
-                        Text("Existing assignees, reviewers, tags, priority and completion requirements are preserved.", color = TextMuted, fontSize = 10.sp)
+                    Text("Task assignees", color = CyanAccent, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    members.forEach { member ->
+                        val id = member.optString("account_id")
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(
+                                checked = id in newTaskMemberIds,
+                                onCheckedChange = { checked ->
+                                    newTaskMemberIds = if (checked) newTaskMemberIds + id else newTaskMemberIds - id
+                                    if (!checked) newTaskSpecificMemberIds = newTaskSpecificMemberIds - id
+                                }
+                            )
+                            Text(member.optString("username", id.take(22)), color = TextPrimary, fontSize = 11.sp)
+                        }
                     }
+                    Text("Permitted task reviewers", color = CyanAccent, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    members.filter { it.optString("role") in setOf("owner", "admin", "reviewer") }.forEach { member ->
+                        val id = member.optString("account_id")
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(
+                                checked = id in newTaskReviewerIds,
+                                onCheckedChange = { checked ->
+                                    newTaskReviewerIds = if (checked) newTaskReviewerIds + id else newTaskReviewerIds - id
+                                }
+                            )
+                            Text(member.optString("username", id.take(22)), color = TextPrimary, fontSize = 11.sp)
+                        }
+                    }
+                    if (newTaskMode == "everyone") {
+                        Text("Completion requirement", color = CyanAccent, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                        listOf("all" to "All assignees", "count" to "Minimum count", "specific" to "Specific members").forEach { (type, label) ->
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                RadioButton(
+                                    selected = newTaskRequirementType == type,
+                                    onClick = { newTaskRequirementType = type }
+                                )
+                                Text(label, color = TextPrimary, fontSize = 11.sp)
+                            }
+                        }
+                        if (newTaskRequirementType == "count") {
+                            OutlinedTextField(
+                                value = newTaskRequirementCount,
+                                onValueChange = { value -> newTaskRequirementCount = value.filter(Char::isDigit).take(2) },
+                                label = { Text("Number of approvals needed") },
+                                singleLine = true
+                            )
+                        }
+                        if (newTaskRequirementType == "specific") {
+                            members.filter { it.optString("account_id") in newTaskMemberIds }.forEach { member ->
+                                val id = member.optString("account_id")
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Checkbox(
+                                        checked = id in newTaskSpecificMemberIds,
+                                        onCheckedChange = { checked ->
+                                            newTaskSpecificMemberIds = if (checked) newTaskSpecificMemberIds + id else newTaskSpecificMemberIds - id
+                                        }
+                                    )
+                                    Text(member.optString("username", id.take(22)), color = TextPrimary, fontSize = 11.sp)
+                                }
+                            }
+                        }
+                    }
+                    Text("Tags and priority are preserved on edits; custom catalog management remains on the website.", color = TextMuted, fontSize = 10.sp)
                 }
             },
             confirmButton = { TextButton(onClick = { createTask() }, enabled = !loading) { Text(if (editingTask == null) "Create task" else "Save changes") } },
