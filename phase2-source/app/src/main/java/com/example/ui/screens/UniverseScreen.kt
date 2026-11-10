@@ -124,6 +124,11 @@ fun UniverseScreen(
     var reviewDecision by remember { mutableStateOf("approved") }
     var reviewReason by remember { mutableStateOf("") }
     var discussionDraft by remember { mutableStateOf("") }
+    var pendingCommentAction by remember { mutableStateOf<Pair<JSONObject, String>?>(null) }
+    var commentActionText by remember { mutableStateOf("") }
+    var pendingDispute by remember { mutableStateOf<Boolean?>(null) }
+    var disputeReason by remember { mutableStateOf("") }
+    var pendingReopen by remember { mutableStateOf(false) }
     var aiQuote by remember { mutableStateOf<JSONObject?>(null) }
     var aiQuoteMode by remember { mutableStateOf("personal") }
     var aiQuoteAssignmentId by remember { mutableStateOf("") }
@@ -664,6 +669,68 @@ fun UniverseScreen(
         reviewReason = ""
     }
 
+    fun saveCommentAction() {
+        val (comment, action) = pendingCommentAction ?: return
+        val content = commentActionText.trim()
+        if (content.isBlank()) { error = "Enter " + (if (action == "edit") "updated message text." else "a moderation reason."); return }
+        scope.launch {
+            loading = true
+            error = null
+            val body = operationBody().put("revision", comment.optInt("revision", 1))
+            if (action == "edit") body.put("body", content) else body.put("reason", content)
+            if (call(base + "/discussion/" + comment.optString("id") + "/" + action, "POST", body) != null) {
+                pendingCommentAction = null
+                commentActionText = ""
+                onStatus(if (action == "edit") "Discussion message edited." else "Message moderated.")
+                groupId?.let { refreshGroup(it) }
+            }
+            loading = false
+        }
+    }
+
+    fun saveDispute() {
+        val open = pendingDispute ?: return
+        val assignment = selectedAssignment ?: return
+        val task = selectedTask ?: return
+        val reason = disputeReason.trim()
+        if (reason.isBlank()) { error = "Enter a reason for the dispute action."; return }
+        scope.launch {
+            loading = true
+            error = null
+            val body = operationBody()
+                .put("revision", assignment.optInt("revision", 1))
+                .put("task_revision", task.optInt("revision", 1))
+                .put("open", open)
+                .put("reason", reason)
+            if (call(base + "/work/assignments/" + assignment.optString("id") + "/dispute", "POST", body) != null) {
+                pendingDispute = null
+                disputeReason = ""
+                onStatus(if (open) "Submission dispute opened." else "Submission dispute closed.")
+                groupId?.let { refreshGroup(it) }
+            }
+            loading = false
+        }
+    }
+
+    fun reopenAssignment() {
+        val assignment = selectedAssignment ?: return
+        val task = selectedTask ?: return
+        scope.launch {
+            loading = true
+            error = null
+            val body = operationBody()
+                .put("revision", assignment.optInt("revision", 1))
+                .put("task_revision", task.optInt("revision", 1))
+                .put("reason", "Reopened by a permitted reviewer")
+            if (call(base + "/work/assignments/" + assignment.optString("id") + "/reopen", "POST", body) != null) {
+                pendingReopen = false
+                onStatus("Assignment reopened.")
+                groupId?.let { refreshGroup(it) }
+            }
+            loading = false
+        }
+    }
+
     fun startUniverseAiReview(assignment: JSONObject, task: JSONObject) {
         val aid = assignment.optString("id")
         val mode = if (task.optString("mode") == "shared" || (serverIsPro && !proUseByok)) "hosted" else "personal"
@@ -1012,7 +1079,23 @@ fun UniverseScreen(
                                 Column(Modifier.padding(10.dp)) {
                                     Text(comment.optString("actor_id").take(36), color = CyanAccent, fontSize = 10.sp)
                                     Text(comment.optString("body"), color = TextPrimary, fontSize = 12.sp)
-                                    if (comment.optBoolean("hidden")) Text("Moderated", color = TextMuted, fontSize = 10.sp)
+                                    if (comment.optFlag("hidden")) Text("Moderated", color = TextMuted, fontSize = 10.sp)
+                                    if (!comment.optFlag("hidden")) {
+                                        Row {
+                                            if (comment.optString("actor_id") == currentUserId) {
+                                                TextButton(onClick = {
+                                                    pendingCommentAction = comment to "edit"
+                                                    commentActionText = comment.optString("body")
+                                                }) { Text("Edit") }
+                                            }
+                                            if (isManager) {
+                                                TextButton(onClick = {
+                                                    pendingCommentAction = comment to "moderate"
+                                                    commentActionText = ""
+                                                }) { Text("Moderate", color = PriorityP1) }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1441,6 +1524,13 @@ fun UniverseScreen(
         } else {
             selectedAssignment?.optString("account_id") == currentUserId
         }
+        val decided = selectedAssignment?.optString("state") in listOf("approved", "rejected")
+        val disputed = latest?.optFlag("disputed", false) ?: false
+        val canOpenDispute = decided && latest != null && !disputed &&
+            (isSubmitter || isAllowedReviewer) &&
+            (latest.isNull("retain_until") || latest.optLong("retain_until", 0L) > System.currentTimeMillis())
+        val canCloseDispute = decided && disputed && isAllowedReviewer
+        val canReopen = decided && isAllowedReviewer
         val canComplete = auditMode == "none" && isAssignedToMe &&
             selectedAssignment?.optString("state") in listOf("open", "rejected")
         AlertDialog(
@@ -1544,16 +1634,86 @@ fun UniverseScreen(
                     if (canReview) {
                         TextButton(onClick = {
                             reviewDecision = "approved"
+                            showAssignmentDetail = false
                             showReview = true
                         }) { Text("Approve") }
                         TextButton(onClick = {
                             reviewDecision = "rejected"
+                            showAssignmentDetail = false
                             showReview = true
                         }) { Text("Reject", color = PriorityP1) }
+                    }
+                    if (canOpenDispute || canCloseDispute) {
+                        TextButton(onClick = {
+                            pendingDispute = canOpenDispute
+                            disputeReason = ""
+                            showAssignmentDetail = false
+                        }) { Text(if (canOpenDispute) "Dispute" else "Resolve dispute") }
+                    }
+                    if (canReopen) {
+                        TextButton(onClick = {
+                            pendingReopen = true
+                            showAssignmentDetail = false
+                        }) { Text("Reopen") }
                     }
                     TextButton(onClick = { showAssignmentDetail = false }) { Text("Close") }
                 }
             }
+        )
+    }
+
+    pendingCommentAction?.let { (_, action) ->
+        AlertDialog(
+            onDismissRequest = { pendingCommentAction = null },
+            title = { Text(if (action == "edit") "Edit discussion message" else "Moderate discussion message") },
+            text = {
+                OutlinedTextField(
+                    value = commentActionText,
+                    onValueChange = { commentActionText = it },
+                    label = { Text(if (action == "edit") "Message" else "Reason for moderation") },
+                    minLines = 2
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { saveCommentAction() }, enabled = !loading && commentActionText.isNotBlank()) {
+                    Text(if (action == "edit") "Save" else "Moderate")
+                }
+            },
+            dismissButton = { TextButton(onClick = { pendingCommentAction = null }) { Text("Cancel") } }
+        )
+    }
+
+    pendingDispute?.let { open ->
+        AlertDialog(
+            onDismissRequest = { pendingDispute = null },
+            title = { Text(if (open) "Open submission dispute" else "Resolve submission dispute") },
+            text = {
+                Column {
+                    Text("The server records this change in the Universe audit history.", color = TextSecondary, fontSize = 11.sp)
+                    OutlinedTextField(
+                        value = disputeReason,
+                        onValueChange = { disputeReason = it },
+                        label = { Text("Reason") },
+                        minLines = 2
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { saveDispute() }, enabled = !loading && disputeReason.isNotBlank()) {
+                    Text(if (open) "Open dispute" else "Resolve")
+                }
+            },
+            dismissButton = { TextButton(onClick = { pendingDispute = null }) { Text("Cancel") } }
+        )
+    }
+
+    if (pendingReopen) {
+        AlertDialog(
+            onDismissRequest = { pendingReopen = false },
+            title = { Text("Reopen assignment?") },
+            text = { Text("This returns a decided assignment to open and requires a new submission. Protected work may require the Universe owner.") },
+            confirmButton = { TextButton(onClick = { reopenAssignment() }, enabled = !loading) { Text("Reopen") } },
+            dismissButton = { TextButton(onClick = { pendingReopen = false }) { Text("Cancel") } }
         )
     }
 
