@@ -127,6 +127,8 @@ fun UniverseScreen(
     var newTaskParent by remember { mutableStateOf<JSONObject?>(null) }
     var pendingTaskAction by remember { mutableStateOf<Pair<JSONObject, String>?>(null) }
     var pendingWorkspaceAction by remember { mutableStateOf<String?>(null) }
+    var showOwnerTransfer by remember { mutableStateOf(false) }
+    var transferTargetId by remember { mutableStateOf("") }
     var newTaskMode by remember { mutableStateOf("everyone") }
     var newTaskAuditMode by remember { mutableStateOf("none") }
     var criteriaValidation by remember { mutableStateOf<JSONObject?>(null) }
@@ -426,6 +428,30 @@ fun UniverseScreen(
                 onStatus(success)
                 if (selectedGroupId != null) refreshGroup(selectedGroupId!!)
                 else refreshGroups()
+            }
+            loading = false
+        }
+    }
+
+    fun transferUniverseOwnership() {
+        val id = selectedGroupId ?: return
+        val target = transferTargetId
+        if (target.isBlank() || target == currentUserId || members.none { it.optString("account_id") == target }) {
+            error = "Select a different current Universe member."
+            return
+        }
+        scope.launch {
+            loading = true
+            error = null
+            val body = operationBody()
+                .put("revision", groupRevision)
+                .put("target_id", target)
+            if (call("/universe/groups/" + id + "/owner-transfer", "POST", body) != null) {
+                showOwnerTransfer = false
+                transferTargetId = ""
+                onStatus("Universe ownership transferred.")
+                refreshGroup(id)
+                refreshGroups()
             }
             loading = false
         }
@@ -1479,6 +1505,10 @@ fun UniverseScreen(
                             ) { Text("Leave") }
                             if (groupRole == "owner") {
                                 OutlinedButton(
+                                    onClick = { transferTargetId = ""; showOwnerTransfer = true },
+                                    enabled = !loading
+                                ) { Text("Transfer ownership") }
+                                OutlinedButton(
                                     onClick = { pendingWorkspaceAction = "delete" },
                                     enabled = !loading
                                 ) { Text("Delete Universe", color = PriorityP1) }
@@ -1896,6 +1926,40 @@ fun UniverseScreen(
                 }, enabled = !loading) { Text("Delete project", color = PriorityP1) }
             },
             dismissButton = { TextButton(onClick = { pendingProjectDelete = null }) { Text("Cancel") } }
+        )
+    }
+
+    if (showOwnerTransfer) {
+        AlertDialog(
+            onDismissRequest = { showOwnerTransfer = false },
+            title = { Text("Transfer Universe ownership?") },
+            text = {
+                Column(Modifier.heightIn(max = 390.dp).verticalScroll(rememberScrollState())) {
+                    Text(
+                        "The new owner must have active Pro and will control this Universe. You become an administrator. This action cannot be reversed by you alone.",
+                        color = WarningAmber, fontSize = 11.sp
+                    )
+                    members.filter { it.optString("account_id") != currentUserId }.forEach { member ->
+                        val id = member.optString("account_id")
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(
+                                selected = transferTargetId == id,
+                                onClick = { transferTargetId = id }
+                            )
+                            Column {
+                                Text(member.optString("username", id.take(28)), color = TextPrimary, fontSize = 11.sp)
+                                Text(member.optString("role"), color = TextMuted, fontSize = 10.sp)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { transferUniverseOwnership() }, enabled = !loading && transferTargetId.isNotBlank()) {
+                    Text("Transfer ownership", color = PriorityP1)
+                }
+            },
+            dismissButton = { TextButton(onClick = { showOwnerTransfer = false }) { Text("Cancel") } }
         )
     }
 
