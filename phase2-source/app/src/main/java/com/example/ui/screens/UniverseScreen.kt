@@ -208,7 +208,7 @@ fun UniverseScreen(
         if (groupResult != null) group = groupResult.optJSONObject("group")
         val memberResult = call(base + "/members")
         if (memberResult != null) members = memberResult.optJSONArray("members")?.toObjectList() ?: emptyList()
-        if (group?.optString("role") in listOf("owner", "admin")) {
+        if (group?.optString("role").orEmpty() in listOf("owner", "admin")) {
             call(base + "/invitations")?.let {
                 activeInvitations = it.optJSONArray("invitations")?.toObjectList() ?: emptyList()
             }
