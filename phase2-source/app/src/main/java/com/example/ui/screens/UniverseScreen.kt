@@ -857,7 +857,7 @@ fun UniverseScreen(
                             Text("Projects & tasks", color = TextPrimary, fontWeight = FontWeight.Bold)
                             Row {
                                 TextButton(onClick = { showCreateProject = true }, enabled = isManager) { Text("+ Project") }
-                                TextButton(onClick = { showCreateTask = true }, enabled = isManager && projects.isNotEmpty()) { Text("+ Task") }
+                                TextButton(onClick = { beginTaskEditor() }, enabled = isManager && projects.isNotEmpty()) { Text("+ Task") }
                             }
                         }
                         projects.forEach { project ->
@@ -869,7 +869,20 @@ fun UniverseScreen(
                                     modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
                                 ) {
                                     Column(Modifier.padding(12.dp)) {
-                                        Text(task.optString("title"), color = TextPrimary, fontWeight = FontWeight.Bold)
+                                        Text(
+                                            (if (task.optString("parent_id").isNotBlank() && !task.isNull("parent_id")) "↳ " else "") +
+                                                task.optString("title"),
+                                            color = TextPrimary, fontWeight = FontWeight.Bold
+                                        )
+                                        if (task.optFlag("closed")) Text("Closed", color = SuccessGreen, fontSize = 10.sp)
+                                        if (isManager) {
+                                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                TextButton(onClick = { beginTaskEditor(task) }, enabled = !loading && !task.optFlag("closed")) { Text("Edit") }
+                                                TextButton(onClick = { beginTaskEditor(parent = task) }, enabled = !loading && !task.optFlag("closed")) { Text("+ Subtask") }
+                                                TextButton(onClick = { pendingTaskAction = task to "close" }, enabled = !loading && !task.optFlag("closed")) { Text("Close") }
+                                                TextButton(onClick = { pendingTaskAction = task to "delete" }, enabled = !loading) { Text("Delete", color = PriorityP1) }
+                                            }
+                                        }
                                         Text(task.optString("criteria"), color = TextSecondary, fontSize = 11.sp)
                                         Text(
                                             task.optString("mode") + " · " +
@@ -1181,16 +1194,28 @@ fun UniverseScreen(
     if (showCreateTask) {
         AlertDialog(
             onDismissRequest = { showCreateTask = false },
-            title = { Text("New Universe task") },
+            title = { Text(if (editingTask == null) (if (newTaskParent == null) "New Universe task" else "New subtask") else "Edit Universe task") },
             text = {
                 Column(Modifier.heightIn(max = 430.dp).verticalScroll(rememberScrollState())) {
+                    if (editingTask == null && newTaskParent == null && projects.size > 1) {
+                        Text("Project", color = TextSecondary, fontSize = 11.sp)
+                        projects.forEach { project ->
+                            FilterChip(
+                                selected = selectedProjectId == project.optString("id"),
+                                onClick = { selectedProjectId = project.optString("id") },
+                                label = { Text(project.optString("title")) }
+                            )
+                        }
+                    }
+                    newTaskParent?.let { Text("Parent: " + it.optString("title"), color = CyanAccent, fontSize = 11.sp) }
                     OutlinedTextField(value = newTaskTitle, onValueChange = { newTaskTitle = it; criteriaValidation = null }, label = { Text("Task title") })
-                    OutlinedTextField(value = newTaskCriteria, onValueChange = { newTaskCriteria = it; criteriaValidation = null }, label = { Text("Verifiable proof criteria") }, minLines = 3)
+                    OutlinedTextField(value = newTaskDescription, onValueChange = { newTaskDescription = it; criteriaValidation = null }, label = { Text("Description (optional)") }, minLines = 2)
+                    OutlinedTextField(value = newTaskCriteria, onValueChange = { newTaskCriteria = it; criteriaValidation = null }, enabled = editingTask == null || groupRole == "owner", label = { Text("Verifiable proof criteria") }, minLines = 3)
                     Text("Assignment mode", fontSize = 11.sp)
                     Row {
-                        FilterChip(selected = newTaskMode == "everyone", onClick = { newTaskMode = "everyone" }, label = { Text("Everyone") })
+                        FilterChip(selected = newTaskMode == "everyone", onClick = { newTaskMode = "everyone" }, enabled = editingTask == null, label = { Text("Everyone") })
                         Spacer(Modifier.width(6.dp))
-                        FilterChip(selected = newTaskMode == "shared", onClick = { newTaskMode = "shared" }, label = { Text("Shared") })
+                        FilterChip(selected = newTaskMode == "shared", onClick = { newTaskMode = "shared" }, enabled = editingTask == null, label = { Text("Shared") })
                     }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -1242,7 +1267,8 @@ fun UniverseScreen(
                                 onClick = {
                                     newTaskAuditMode = mode
                                     criteriaValidation = null
-                                }
+                                },
+                                enabled = editingTask == null || groupRole == "owner"
                             )
                             Text(label, color = TextPrimary, fontSize = 12.sp)
                         }
@@ -1264,11 +1290,57 @@ fun UniverseScreen(
                             )
                         }
                     }
-                    Text("All active Universe members are assigned. Review permissions are enforced by the Worker.", color = TextMuted, fontSize = 10.sp)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = newTaskAllowLate, onCheckedChange = { newTaskAllowLate = it })
+                        Text("Allow late submissions", color = TextPrimary, fontSize = 11.sp)
+                    }
+                    if (groupRole == "owner") {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = newTaskShield, onCheckedChange = { newTaskShield = it })
+                            Text("Shield: require unfinished subtasks first", color = TextPrimary, fontSize = 11.sp)
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = newTaskBonus, onCheckedChange = { newTaskBonus = it })
+                            Text("Bonus: optional for parent completion", color = TextPrimary, fontSize = 11.sp)
+                        }
+                    }
+                    if (editingTask == null) {
+                        Text("All current Universe members are assigned. Custom assignees and reviewers remain available on the website.", color = TextMuted, fontSize = 10.sp)
+                    } else {
+                        Text("Existing assignees, reviewers, tags, priority and completion requirements are preserved.", color = TextMuted, fontSize = 10.sp)
+                    }
                 }
             },
-            confirmButton = { TextButton(onClick = { createTask() }, enabled = !loading) { Text("Create task") } },
-            dismissButton = { TextButton(onClick = { showCreateTask = false }) { Text("Cancel") } }
+            confirmButton = { TextButton(onClick = { createTask() }, enabled = !loading) { Text(if (editingTask == null) "Create task" else "Save changes") } },
+            dismissButton = { TextButton(onClick = { showCreateTask = false; editingTask = null; newTaskParent = null }) { Text("Cancel") } }
+        )
+    }
+
+    pendingTaskAction?.let { (task, action) ->
+        val isDelete = action == "delete"
+        AlertDialog(
+            onDismissRequest = { pendingTaskAction = null },
+            title = { Text(if (isDelete) "Delete task and subtasks?" else "Close task?") },
+            text = {
+                Text(
+                    if (isDelete) "Deleting " + task.optString("title") +
+                        " also deletes its descendant tasks, cancels assignments and marks evidence for deletion. This cannot be undone."
+                    else "Closing " + task.optString("title") +
+                        " ends its assignments and may remove phone-lock eligibility. Reopen is not supported by this action.",
+                    color = TextPrimary
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    postGroupAction(
+                        base + "/work/tasks/" + task.optString("id") + "/" + action,
+                        operationBody().put("revision", task.optInt("revision", 1)),
+                        if (isDelete) "Task deleted." else "Task closed."
+                    )
+                    pendingTaskAction = null
+                }, enabled = !loading) { Text(if (isDelete) "Delete" else "Close task", color = if (isDelete) PriorityP1 else TextPrimary) }
+            },
+            dismissButton = { TextButton(onClick = { pendingTaskAction = null }) { Text("Cancel") } }
         )
     }
 
