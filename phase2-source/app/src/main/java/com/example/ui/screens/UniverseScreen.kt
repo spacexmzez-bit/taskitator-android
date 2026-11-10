@@ -78,6 +78,7 @@ fun UniverseScreen(
     var selectedGroupId by remember { mutableStateOf<String?>(null) }
     var group by remember { mutableStateOf<JSONObject?>(null) }
     var members by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
+    var activeInvitations by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var projects by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var tasks by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var catalog by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
@@ -93,6 +94,10 @@ fun UniverseScreen(
     var joinToken by remember { mutableStateOf("") }
     var createTitle by remember { mutableStateOf("") }
     var createPurpose by remember { mutableStateOf("") }
+    var showGroupEditor by remember { mutableStateOf(false) }
+    var editGroupTitle by remember { mutableStateOf("") }
+    var editGroupPurpose by remember { mutableStateOf("") }
+    var pendingInviteCancel by remember { mutableStateOf<JSONObject?>(null) }
     var showCreateGroup by remember { mutableStateOf(false) }
     var showCreateProject by remember { mutableStateOf(false) }
     var newProjectTitle by remember { mutableStateOf("") }
@@ -203,6 +208,13 @@ fun UniverseScreen(
         if (groupResult != null) group = groupResult.optJSONObject("group")
         val memberResult = call(base + "/members")
         if (memberResult != null) members = memberResult.optJSONArray("members")?.toObjectList() ?: emptyList()
+        if (group?.optString("role") in listOf("owner", "admin")) {
+            call(base + "/invitations")?.let {
+                activeInvitations = it.optJSONArray("invitations")?.toObjectList() ?: emptyList()
+            }
+        } else {
+            activeInvitations = emptyList()
+        }
         val workResult = call(base + "/work")
         if (workResult != null) {
             projects = workResult.optJSONArray("projects")?.toObjectList() ?: emptyList()
@@ -470,6 +482,27 @@ fun UniverseScreen(
                 selectedGroupId = null
                 group = null
                 onStatus(if (action == "delete") "Universe deleted." else "Left the Universe.")
+                refreshGroups()
+            }
+            loading = false
+        }
+    }
+
+    fun saveUniverseDetails() {
+        val id = selectedGroupId ?: return
+        val title = editGroupTitle.trim()
+        if (title.isBlank()) { error = "Enter a Universe name."; return }
+        scope.launch {
+            loading = true
+            error = null
+            val body = operationBody()
+                .put("revision", groupRevision)
+                .put("title", title)
+                .put("purpose", editGroupPurpose.trim())
+            if (call("/universe/groups/" + id + "/edit", "POST", body) != null) {
+                showGroupEditor = false
+                onStatus("Universe details updated.")
+                refreshGroup(id)
                 refreshGroups()
             }
             loading = false
@@ -1130,6 +1163,13 @@ fun UniverseScreen(
                     Text(group?.optString("title", "Universe") ?: "Universe", color = TextPrimary, fontWeight = FontWeight.Bold)
                     Text(groupRole.uppercase(), color = CyanAccent, fontSize = 10.sp)
                 }
+                if (groupRole == "owner") {
+                    TextButton(onClick = {
+                        editGroupTitle = group?.optString("title").orEmpty()
+                        editGroupPurpose = group?.optString("purpose").orEmpty()
+                        showGroupEditor = true
+                    }, enabled = !loading) { Text("Edit") }
+                }
             }
             ScrollableTabRow(
                 selectedTabIndex = listOf("Work", "People", "Discussion", "Controls").indexOf(currentTab).coerceAtLeast(0),
@@ -1283,6 +1323,23 @@ fun UniverseScreen(
                                             .put("revision", groupRevision)
                                             .put("target_id", id), "Member removed.")
                                     }) { Text("Remove", color = PriorityP1) }
+                                }
+                            }
+                        }
+                        if (activeInvitations.isNotEmpty() && isManager) {
+                            Text("Pending invitations", color = CyanAccent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            activeInvitations.forEach { invitation ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        invitation.optString("role") + " · " + invitation.optString("id").take(20),
+                                        color = TextSecondary, fontSize = 10.sp, modifier = Modifier.weight(1f)
+                                    )
+                                    TextButton(onClick = { pendingInviteCancel = invitation }, enabled = !loading) {
+                                        Text("Cancel", color = PriorityP1)
+                                    }
                                 }
                             }
                         }
@@ -1533,6 +1590,46 @@ fun UniverseScreen(
                 }
             }
         }
+    }
+
+    if (showGroupEditor) {
+        AlertDialog(
+            onDismissRequest = { showGroupEditor = false },
+            title = { Text("Edit Universe details") },
+            text = {
+                Column {
+                    OutlinedTextField(value = editGroupTitle, onValueChange = { editGroupTitle = it }, label = { Text("Name") })
+                    OutlinedTextField(value = editGroupPurpose, onValueChange = { editGroupPurpose = it }, label = { Text("Purpose") }, minLines = 2)
+                }
+            },
+            confirmButton = { TextButton(onClick = { saveUniverseDetails() }, enabled = !loading && editGroupTitle.isNotBlank()) { Text("Save") } },
+            dismissButton = { TextButton(onClick = { showGroupEditor = false }) { Text("Cancel") } }
+        )
+    }
+
+    pendingInviteCancel?.let { invitation ->
+        AlertDialog(
+            onDismissRequest = { pendingInviteCancel = null },
+            title = { Text("Cancel invitation?") },
+            text = { Text("This invitation token will no longer be accepted. Existing members are unaffected.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    val id = invitation.optString("id")
+                    scope.launch {
+                        loading = true
+                        error = null
+                        if (call(base + "/invitations/" + id + "/cancel", "POST",
+                                operationBody().put("revision", groupRevision)) != null) {
+                            pendingInviteCancel = null
+                            onStatus("Invitation cancelled.")
+                            groupId?.let { refreshGroup(it) }
+                        }
+                        loading = false
+                    }
+                }, enabled = !loading) { Text("Cancel invitation", color = PriorityP1) }
+            },
+            dismissButton = { TextButton(onClick = { pendingInviteCancel = null }) { Text("Keep invitation") } }
+        )
     }
 
     if (showCreateGroup) {
