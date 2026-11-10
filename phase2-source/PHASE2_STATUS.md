@@ -18,7 +18,7 @@ Phase 2 builds on the Phase 1 native app and adds Worker-backed AI, Pro, phone-d
 - Added native project editing, member/reviewer selection, archive/color options and empty-project deletion; task editing, subtasks, assignee/reviewer selection, all/count/specific completion requirements, shield/bonus controls, opening/due/late-cutoff dates, optional late submission, and confirmed close/delete.
 - Added a native tag/priority catalog editor and task label selection, discussion message editing/moderation, submission disputes and reopening.
 - Added a Worker-authoritative task-only JSON export for Universe owners. This excludes attachments and submission history and is **not** a full backup.
-- Added confirmation before deleting or leaving a Universe, and retained existing screen data when individual refresh requests fail.
+- Added confirmation before deleting or leaving a Universe, owner-verified ownership transfer, group detail editing, pending-invitation cancellation, and retained existing screen data when individual refresh requests fail.
 - Added a pull-and-three-way-merge refresh after server-side AI completion so a stale local snapshot is not pushed over the Worker's authoritative completion.
 - Updated the Android package ID and version for the Phase 2 build.
 
@@ -35,7 +35,7 @@ Successful runs publish the `taskitator-phase2-build` artifact containing the AP
 ## Known gaps — this is not yet full website parity
 
 - Universe task hierarchy reordering and certain advanced administrative controls are not yet exposed natively.
-- Full Universe backup (including attachments/history), import/overwrite, ownership transfer, and some administrative lifecycle controls still require the website. Android currently exports task-only JSON manifests.
+- Full Universe backup (including attachments/history), import/overwrite, and some administrative lifecycle controls still require the website. Android currently exports task-only JSON manifests.
 - AI key creation/replacement and account verification still use the website's verified flow; the app does not collect or store raw provider keys.
 - Native Clerk sign-in and recovery are not implemented in this phase; the app continues to use its existing authenticated-token flow.
 - MacroDroid and phone-lock enforcement have not been end-to-end tested on a physical device. Universe task and catalog features depend on the deployed Worker and its required database migrations (including Phase 6–9 where applicable).
