@@ -129,6 +129,8 @@ fun UniverseScreen(
     var newTaskAuditMode by remember { mutableStateOf("none") }
     var criteriaValidation by remember { mutableStateOf<JSONObject?>(null) }
     var dueAtMillis by remember { mutableStateOf<Long?>(null) }
+    var startAtMillis by remember { mutableStateOf<Long?>(null) }
+    var lateUntilMillis by remember { mutableStateOf<Long?>(null) }
     var selectedProjectId by remember { mutableStateOf("") }
     var showInvite by remember { mutableStateOf(false) }
     var inviteRole by remember { mutableStateOf("member") }
@@ -589,6 +591,8 @@ fun UniverseScreen(
         newTaskTagIds = task?.optJSONArray("tags")?.toStringSet() ?: emptySet()
         newTaskPriorityId = task?.optString("priority_id")?.takeIf { it.isNotBlank() && it != "null" }
         dueAtMillis = task?.optLong("due_at", 0L)?.takeIf { it > 0L }
+        startAtMillis = task?.optLong("start_at", 0L)?.takeIf { it > 0L }
+        lateUntilMillis = task?.optLong("late_until", 0L)?.takeIf { it > 0L }
         criteriaValidation = null
         showCreateTask = true
     }
@@ -655,6 +659,15 @@ fun UniverseScreen(
         val projectId = selectedProjectId.ifBlank { projects.firstOrNull()?.optString("id").orEmpty() }
         val requiresAiCriteria = newTaskAuditMode in setOf("ai", "either", "both")
         if (newTaskMemberIds.isEmpty()) { error = "Select at least one task assignee."; return }
+        if (startAtMillis != null && dueAtMillis != null && startAtMillis!! > dueAtMillis!!) {
+            error = "The opening date cannot follow the due date."
+            return
+        }
+        if (newTaskAllowLate && lateUntilMillis != null &&
+            (dueAtMillis == null || lateUntilMillis!! < dueAtMillis!!)) {
+            error = "The late cutoff must be on or after the due date."
+            return
+        }
         if (newTaskRequirementType == "count" &&
             (newTaskRequirementCount.toIntOrNull() ?: 0) !in 1..newTaskMemberIds.size) {
             error = "Completion count must be between 1 and the number of assignees."
@@ -684,8 +697,10 @@ fun UniverseScreen(
         val body = operationBody().apply {
             put("title", title)
             put("description", description)
+            put("start_at", startAtMillis ?: JSONObject.NULL)
             put("due_at", dueAtMillis ?: JSONObject.NULL)
             put("allow_late", newTaskAllowLate)
+            put("late_until", if (newTaskAllowLate) lateUntilMillis ?: JSONObject.NULL else JSONObject.NULL)
             put("members", JSONArray(newTaskMemberIds.toList()))
             put("reviewers", JSONArray(newTaskReviewerIds.toList()))
             put("tags", JSONArray(newTaskTagIds.toList()))
@@ -1563,6 +1578,29 @@ fun UniverseScreen(
                         Spacer(Modifier.width(6.dp))
                         FilterChip(selected = newTaskMode == "shared", onClick = { newTaskMode = "shared" }, enabled = editingTask == null, label = { Text("Shared") })
                     }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedButton(onClick = {
+                            val riyadh = TimeZone.getTimeZone("Asia/Riyadh")
+                            val initial = Calendar.getInstance(riyadh)
+                            startAtMillis?.let { initial.timeInMillis = it }
+                            DatePickerDialog(
+                                context,
+                                { _, year, month, day ->
+                                    startAtMillis = Calendar.getInstance(riyadh).apply {
+                                        set(year, month, day, 0, 0, 0)
+                                        set(Calendar.MILLISECOND, 0)
+                                    }.timeInMillis
+                                },
+                                initial.get(Calendar.YEAR), initial.get(Calendar.MONTH), initial.get(Calendar.DAY_OF_MONTH)
+                            ).show()
+                        }) { Text(if (startAtMillis == null) "Set opening date" else "Change opening date") }
+                        if (startAtMillis != null) TextButton(onClick = { startAtMillis = null }) { Text("Clear") }
+                    }
+                    if (startAtMillis != null) {
+                        Text("Opens: " + SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).apply {
+                            timeZone = TimeZone.getTimeZone("Asia/Riyadh")
+                        }.format(Date(startAtMillis!!)), color = TextSecondary, fontSize = 11.sp)
+                    }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
@@ -1639,6 +1677,31 @@ fun UniverseScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(checked = newTaskAllowLate, onCheckedChange = { newTaskAllowLate = it })
                         Text("Allow late submissions", color = TextPrimary, fontSize = 11.sp)
+                    }
+                    if (newTaskAllowLate) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            OutlinedButton(onClick = {
+                                val riyadh = TimeZone.getTimeZone("Asia/Riyadh")
+                                val initial = Calendar.getInstance(riyadh)
+                                lateUntilMillis?.let { initial.timeInMillis = it }
+                                DatePickerDialog(
+                                    context,
+                                    { _, year, month, day ->
+                                        lateUntilMillis = Calendar.getInstance(riyadh).apply {
+                                            set(year, month, day, 23, 59, 0)
+                                            set(Calendar.MILLISECOND, 0)
+                                        }.timeInMillis
+                                    },
+                                    initial.get(Calendar.YEAR), initial.get(Calendar.MONTH), initial.get(Calendar.DAY_OF_MONTH)
+                                ).show()
+                            }) { Text(if (lateUntilMillis == null) "Set late cutoff" else "Change late cutoff") }
+                            if (lateUntilMillis != null) TextButton(onClick = { lateUntilMillis = null }) { Text("Clear") }
+                        }
+                        if (lateUntilMillis != null) {
+                            Text("Late cutoff: " + SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).apply {
+                                timeZone = TimeZone.getTimeZone("Asia/Riyadh")
+                            }.format(Date(lateUntilMillis!!)), color = TextSecondary, fontSize = 11.sp)
+                        }
                     }
                     if (groupRole == "owner") {
                         Row(verticalAlignment = Alignment.CenterVertically) {
