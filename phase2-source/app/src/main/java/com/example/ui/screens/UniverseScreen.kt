@@ -378,6 +378,43 @@ fun UniverseScreen(
         }
     }
 
+    fun exportUniverseTaskBackup() {
+        if (groupRole != "owner" || groupId == null || downloadBusy) return
+        scope.launch {
+            loading = true
+            downloadBusy = true
+            error = null
+            try {
+                val started = call(base + "/transfer", "POST", operationBody().put("full", false))
+                    ?: return@launch
+                val transferId = started.optString("id")
+                if (transferId.isBlank()) throw IllegalStateException("The Worker did not return an export ID.")
+                val response = call(base + "/transfer/" + transferId) ?: return@launch
+                val manifest = response.optJSONObject("manifest")
+                    ?: throw IllegalStateException("The Worker returned no export manifest.")
+                if (manifest.optString("format") != "taskitator-universe") {
+                    throw IllegalStateException("Unsupported Universe export format.")
+                }
+                val bytes = manifest.toString(2).toByteArray(Charsets.UTF_8)
+                if (bytes.isEmpty() || bytes.size > 20 * 1024 * 1024) {
+                    throw IllegalStateException("The export manifest exceeds the supported 20 MiB limit.")
+                }
+                val safeTitle = group?.optString("title", "universe").orEmpty()
+                    .replace(Regex("[^A-Za-z0-9_-]"), "_").take(40).ifBlank { "universe" }
+                val name = "taskitator-" + safeTitle + "-tasks.json"
+                pendingDownload = UniversePendingDownload(name, "application/json", bytes)
+                saveFileLauncher.launch(name)
+            } catch (e: Exception) {
+                error = e.message ?: "Unable to export Universe tasks."
+                pendingDownload = null
+                downloadBusy = false
+            } finally {
+                loading = false
+                if (pendingDownload == null) downloadBusy = false
+            }
+        }
+    }
+
     fun postGroupAction(path: String, body: JSONObject, success: String) {
         scope.launch {
             loading = true
@@ -1418,10 +1455,21 @@ fun UniverseScreen(
                                 ) { Text("Delete Universe", color = PriorityP1) }
                             }
                         }
+                        if (groupRole == "owner") {
+                            OutlinedButton(
+                                onClick = { exportUniverseTaskBackup() },
+                                enabled = !loading && !downloadBusy,
+                                modifier = Modifier.fillMaxWidth()
+                            ) { Text("Export task-only Universe backup (JSON)") }
+                            Text(
+                                "This backup includes project/task definitions and catalog metadata, but no proof files or submission history. Keep it private.",
+                                color = TextMuted, fontSize = 10.sp
+                            )
+                        }
                         OutlinedButton(
                             onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://taskitator.mazendev.com"))) },
                             modifier = Modifier.fillMaxWidth()
-                        ) { Text("Open website for backup import/export and advanced transfer") }
+                        ) { Text("Open website for full backup, import and ownership transfer") }
                     }
                 }
             }
