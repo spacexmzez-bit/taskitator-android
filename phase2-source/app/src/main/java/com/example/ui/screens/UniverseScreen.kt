@@ -80,6 +80,7 @@ fun UniverseScreen(
     var members by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var projects by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var tasks by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
+    var catalog by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var assignments by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var comments by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var activity by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
@@ -112,6 +113,14 @@ fun UniverseScreen(
     var newTaskRequirementType by remember { mutableStateOf("all") }
     var newTaskRequirementCount by remember { mutableStateOf("1") }
     var newTaskSpecificMemberIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var newTaskTagIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var newTaskPriorityId by remember { mutableStateOf<String?>(null) }
+    var editingCatalogItem by remember { mutableStateOf<JSONObject?>(null) }
+    var showCatalogEditor by remember { mutableStateOf(false) }
+    var catalogKind by remember { mutableStateOf("tag") }
+    var catalogTitle by remember { mutableStateOf("") }
+    var catalogRank by remember { mutableStateOf("0") }
+    var pendingCatalogDelete by remember { mutableStateOf<JSONObject?>(null) }
     var editingTask by remember { mutableStateOf<JSONObject?>(null) }
     var newTaskParent by remember { mutableStateOf<JSONObject?>(null) }
     var pendingTaskAction by remember { mutableStateOf<Pair<JSONObject, String>?>(null) }
@@ -193,6 +202,7 @@ fun UniverseScreen(
             projects = workResult.optJSONArray("projects")?.toObjectList() ?: emptyList()
             tasks = workResult.optJSONArray("tasks")?.toObjectList() ?: emptyList()
             assignments = workResult.optJSONArray("assignments")?.toObjectList() ?: emptyList()
+            catalog = workResult.optJSONArray("catalog")?.toObjectList() ?: emptyList()
         }
         val discussionResult = call(base + "/discussion")
         if (discussionResult != null) comments = discussionResult.optJSONArray("comments")?.toObjectList() ?: emptyList()
@@ -476,6 +486,42 @@ fun UniverseScreen(
         }
     }
 
+    fun beginCatalogEditor(item: JSONObject? = null, kind: String = "tag") {
+        editingCatalogItem = item
+        catalogKind = item?.optString("kind", kind) ?: kind
+        catalogTitle = item?.optString("title").orEmpty()
+        catalogRank = item?.optInt("rank", 0)?.toString() ?: "0"
+        showCatalogEditor = true
+    }
+
+    fun saveCatalogItem() {
+        val item = editingCatalogItem
+        val title = catalogTitle.trim()
+        val rank = catalogRank.toIntOrNull()
+        if (title.isBlank() || rank == null || groupId == null) {
+            error = "Enter a label title and numeric rank."
+            return
+        }
+        val path = if (item == null) base + "/work/catalog"
+            else base + "/work/catalog/" + item.optString("id") + "/edit"
+        scope.launch {
+            loading = true
+            error = null
+            val body = operationBody()
+                .put("revision", groupRevision)
+                .put("kind", catalogKind)
+                .put("title", title)
+                .put("rank", rank)
+            if (call(path, "POST", body) != null) {
+                showCatalogEditor = false
+                editingCatalogItem = null
+                onStatus(if (item == null) "Universe label created." else "Universe label updated.")
+                refreshGroup(groupId!!)
+            }
+            loading = false
+        }
+    }
+
     fun beginTaskEditor(task: JSONObject? = null, parent: JSONObject? = null) {
         editingTask = task
         newTaskParent = if (task == null) parent else null
@@ -501,6 +547,8 @@ fun UniverseScreen(
         newTaskRequirementType = requirement?.optString("type", "all") ?: "all"
         newTaskRequirementCount = requirement?.optInt("count", 1)?.toString() ?: "1"
         newTaskSpecificMemberIds = requirement?.optJSONArray("members")?.toStringSet() ?: emptySet()
+        newTaskTagIds = task?.optJSONArray("tags")?.toStringSet() ?: emptySet()
+        newTaskPriorityId = task?.optString("priority_id")?.takeIf { it.isNotBlank() && it != "null" }
         dueAtMillis = task?.optLong("due_at", 0L)?.takeIf { it > 0L }
         selectedProjectId = task?.optString("project_id")
             ?: parent?.optString("project_id")
@@ -604,6 +652,8 @@ fun UniverseScreen(
             put("allow_late", newTaskAllowLate)
             put("members", JSONArray(newTaskMemberIds.toList()))
             put("reviewers", JSONArray(newTaskReviewerIds.toList()))
+            put("tags", JSONArray(newTaskTagIds.toList()))
+            newTaskPriorityId?.let { put("priority_id", it) }
             put("requirement", JSONObject().apply {
                 put("type", newTaskRequirementType)
                 if (newTaskRequirementType == "count") put("count", newTaskRequirementCount.toInt())
@@ -1211,6 +1261,32 @@ fun UniverseScreen(
 
                     "Controls" -> {
                         Text("Workspace controls", color = TextPrimary, fontWeight = FontWeight.Bold)
+                        if (isManager) {
+                            Text("Task labels", color = CyanAccent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(onClick = { beginCatalogEditor(kind = "tag") }, enabled = !loading) { Text("+ Tag") }
+                                OutlinedButton(onClick = { beginCatalogEditor(kind = "priority") }, enabled = !loading) { Text("+ Priority") }
+                            }
+                            catalog.forEach { item ->
+                                val id = item.optString("id")
+                                val used = tasks.any { task ->
+                                    task.optString("priority_id") == id ||
+                                        task.optJSONArray("tags")?.containsString(id) == true
+                                }
+                                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                    Text(item.optString("kind") + ": " + item.optString("title") +
+                                        " (rank " + item.optInt("rank", 0) + ")",
+                                        color = TextPrimary, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                                    TextButton(onClick = { beginCatalogEditor(item) }, enabled = !loading) { Text("Edit") }
+                                    TextButton(
+                                        onClick = { pendingCatalogDelete = item },
+                                        enabled = !loading && !used
+                                    ) { Text("Delete", color = PriorityP1) }
+                                }
+                            }
+                            Text("Labels in use cannot be deleted until removed from their tasks.", color = TextMuted, fontSize = 10.sp)
+                            Spacer(Modifier.height(12.dp))
+                        }
                         val validateCriteria = groupSettings?.optFlag("validate_criteria", true) ?: true
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -1582,11 +1658,83 @@ fun UniverseScreen(
                             }
                         }
                     }
-                    Text("Tags and priority are preserved on edits; custom catalog management remains on the website.", color = TextMuted, fontSize = 10.sp)
+                    val priorities = catalog.filter { it.optString("kind") == "priority" }
+                    val tags = catalog.filter { it.optString("kind") == "tag" }
+                    if (priorities.isNotEmpty()) {
+                        Text("Priority", color = CyanAccent, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                        priorities.forEach { priority ->
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                RadioButton(
+                                    selected = newTaskPriorityId == priority.optString("id"),
+                                    onClick = { newTaskPriorityId = priority.optString("id") }
+                                )
+                                Text(priority.optString("title"), color = TextPrimary, fontSize = 11.sp)
+                            }
+                        }
+                    }
+                    if (tags.isNotEmpty()) {
+                        Text("Tags", color = CyanAccent, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                        tags.forEach { tag ->
+                            val id = tag.optString("id")
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(
+                                    checked = id in newTaskTagIds,
+                                    onCheckedChange = { checked ->
+                                        newTaskTagIds = if (checked) newTaskTagIds + id else newTaskTagIds - id
+                                    }
+                                )
+                                Text(tag.optString("title"), color = TextPrimary, fontSize = 11.sp)
+                            }
+                        }
+                    }
                 }
             },
             confirmButton = { TextButton(onClick = { createTask() }, enabled = !loading) { Text(if (editingTask == null) "Create task" else "Save changes") } },
             dismissButton = { TextButton(onClick = { showCreateTask = false; editingTask = null; newTaskParent = null }) { Text("Cancel") } }
+        )
+    }
+
+    if (showCatalogEditor) {
+        AlertDialog(
+            onDismissRequest = { showCatalogEditor = false },
+            title = { Text((if (editingCatalogItem == null) "New " else "Edit ") + catalogKind) },
+            text = {
+                Column {
+                    OutlinedTextField(value = catalogTitle, onValueChange = { catalogTitle = it }, label = { Text("Label") })
+                    OutlinedTextField(
+                        value = catalogRank,
+                        onValueChange = { catalogRank = it.filter { ch -> ch.isDigit() || ch == '-' }.take(8) },
+                        label = { Text("Rank (higher first)") },
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = { TextButton(onClick = { saveCatalogItem() }, enabled = !loading && catalogTitle.isNotBlank()) { Text("Save") } },
+            dismissButton = { TextButton(onClick = { showCatalogEditor = false }) { Text("Cancel") } }
+        )
+    }
+
+    pendingCatalogDelete?.let { item ->
+        AlertDialog(
+            onDismissRequest = { pendingCatalogDelete = null },
+            title = { Text("Delete " + item.optString("title") + "?") },
+            text = { Text("This label will be removed from the Universe catalog. Labels used by tasks cannot be deleted.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch {
+                        loading = true
+                        error = null
+                        if (call(base + "/work/catalog/" + item.optString("id") + "/delete", "POST",
+                                operationBody().put("revision", groupRevision).put("kind", item.optString("kind"))) != null) {
+                            pendingCatalogDelete = null
+                            onStatus("Universe label deleted.")
+                            groupId?.let { refreshGroup(it) }
+                        }
+                        loading = false
+                    }
+                }, enabled = !loading) { Text("Delete", color = PriorityP1) }
+            },
+            dismissButton = { TextButton(onClick = { pendingCatalogDelete = null }) { Text("Cancel") } }
         )
     }
 
