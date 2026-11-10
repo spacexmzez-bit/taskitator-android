@@ -100,6 +100,8 @@ fun UniverseScreen(
     var editingProject by remember { mutableStateOf<JSONObject?>(null) }
     var projectMemberIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var projectReviewerIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var projectArchived by remember { mutableStateOf(false) }
+    var projectColor by remember { mutableStateOf("") }
     var pendingProjectDelete by remember { mutableStateOf<JSONObject?>(null) }
     var showCreateTask by remember { mutableStateOf(false) }
     var newTaskTitle by remember { mutableStateOf("") }
@@ -494,6 +496,8 @@ fun UniverseScreen(
         projectReviewerIds = project?.optJSONArray("reviewers")?.toStringSet()
             ?: members.filter { it.optString("role") in setOf("owner", "admin", "reviewer") }
                 .map { it.optString("account_id") }.filter { it.isNotBlank() }.toSet()
+        projectArchived = project?.optJSONObject("options")?.optBoolean("archived", false) ?: false
+        projectColor = project?.optJSONObject("options")?.optString("color").orEmpty()
         showCreateProject = true
     }
 
@@ -501,11 +505,19 @@ fun UniverseScreen(
         val original = editingProject
         val title = newProjectTitle.trim()
         if (title.isBlank() || groupId == null) { error = "Enter a project name."; return }
+        if (projectColor.isNotBlank() && !projectColor.matches(Regex("^#[0-9a-fA-F]{6}$"))) {
+            error = "Use a six-digit hexadecimal project color, such as #4A90E2."
+            return
+        }
         val body = operationBody().apply {
             put("title", title)
             put("description", newProjectDescription.trim())
             put("members", JSONArray(projectMemberIds.toList()))
             put("reviewers", JSONArray(projectReviewerIds.toList()))
+            put("options", JSONObject().apply {
+                put("archived", projectArchived)
+                if (projectColor.isNotBlank()) put("color", projectColor)
+            })
             if (original != null) put("revision", groupRevision)
         }
         val path = if (original == null) base + "/work/projects"
@@ -1138,6 +1150,9 @@ fun UniverseScreen(
                             if (project.optString("description").isNotBlank()) {
                                 Text(project.optString("description"), color = TextSecondary, fontSize = 10.sp)
                             }
+                            if (project.optJSONObject("options")?.optBoolean("archived", false) == true) {
+                                Text("Archived project", color = TextMuted, fontSize = 10.sp)
+                            }
                             tasks.filter { it.optString("project_id") == project.optString("id") }.forEach { task ->
                                 Card(
                                     colors = CardDefaults.cardColors(containerColor = DarkSurface),
@@ -1513,6 +1528,11 @@ fun UniverseScreen(
                 Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState())) {
                     OutlinedTextField(value = newProjectTitle, onValueChange = { newProjectTitle = it }, label = { Text("Project title") })
                     OutlinedTextField(value = newProjectDescription, onValueChange = { newProjectDescription = it }, label = { Text("Description") }, minLines = 2)
+                    OutlinedTextField(value = projectColor, onValueChange = { projectColor = it.take(7) }, label = { Text("Color (#RRGGBB, optional)") }, singleLine = true)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = projectArchived, onCheckedChange = { projectArchived = it })
+                        Text("Archive project", color = TextPrimary, fontSize = 11.sp)
+                    }
                     Text("Project members", color = CyanAccent, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                     members.forEach { member ->
                         val id = member.optString("account_id")
